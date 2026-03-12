@@ -6,8 +6,11 @@ import { Badge } from './ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
-import { ArrowLeft, Package, History, TrendingDown, X } from 'lucide-react';
-
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from './ui/alert-dialog';
+import { ArrowLeft, Package, History, TrendingDown, X, Plus, Pencil, Trash2 } from 'lucide-react';
+import { toast } from 'sonner';
+import type { CustomerRecord } from './Customer';
 
 interface Material {
   id: string;
@@ -19,75 +22,103 @@ interface Material {
   memo?: string;
 }
 
-interface Customer {
-  id: string;
-  companyName: string;
-  contactPerson: string;
-  email: string;
-  phone: string;
-  address?: string;
-  memo?: string;
-  createdAt: string;
-  type: 'customer' | 'supplier';
-  rating?: number;
-  reliability?: number;
-  leadTime?: string;
-  supplierMaterials?: Array<{
-    materialId: string;
-    materialName: string;
-    defaultUnitPrice?: number;
-    unit?: string;
-    isPreferred?: boolean;
-    memo?: string;
-  }>;
-  isActive: boolean;
-}
-
 interface PurchaseOrder {
   id: string;
-  projectId: string;
+  projectId?: string;
   projectName: string;
-  customerName: string;
-  supplierId: string;
-  supplierName: string;
-  supplierPhone: string;
-  supplierEmail: string;
   orderDate: string;
-  expectedDeliveryDate: string;
-  status: 'ordered' | 'confirmed' | 'shipping' | 'delivered' | 'completed' | 'cancelled';
-  totalAmount: number;
-  materials: Array<{
-    id: string;
-    materialName: string;
-    quantity: number;
-    unit: string;
-    unitPrice: number;
-    totalPrice: number;
-    isFromQuote: boolean;
-  }>;
-  memo?: string;
+  expectedDeliveryDate?: string;
+  status: string;
+  supplierId?: string;
+  materials: Array<{ materialName: string; quantity: number; unit: string; unitPrice: number }>;
 }
 
 interface SupplierDetailProps {
-  supplier: Customer;
+  supplier: CustomerRecord;
   materials: Material[];
   purchaseOrders: PurchaseOrder[];
+  setCustomers: React.Dispatch<React.SetStateAction<CustomerRecord[]>>;
   onBack: () => void;
+  onOrderClick?: (orderId: string) => void;
 }
 
 const SupplierDetail: React.FC<SupplierDetailProps> = ({
   supplier,
   materials,
   purchaseOrders,
-  onBack
+  setCustomers,
+  onBack,
+  onOrderClick,
 }) => {
   const [selectedMaterial, setSelectedMaterial] = useState<string>('all');
   const [dateFrom, setDateFrom] = useState<string>('');
   const [dateTo, setDateTo] = useState<string>('');
+  const [addMaterialOpen, setAddMaterialOpen] = useState(false);
+  const [selectedMaterialIdToAdd, setSelectedMaterialIdToAdd] = useState('');
+  const [deleteConfirm, setDeleteConfirm] = useState<{ materialId: string; materialName: string } | null>(null);
 
   const supplierOrders = useMemo(() => {
-    return purchaseOrders.filter(order => order.supplierId === supplier.id);
-  }, [supplier, purchaseOrders]);
+    return purchaseOrders.filter((order) => order.supplierId === supplier.id);
+  }, [supplier.id, purchaseOrders]);
+
+  const addMaterialLink = () => {
+    const mat = materials.find((m) => m.id === selectedMaterialIdToAdd);
+    if (!mat || (supplier.supplierMaterials ?? []).some((sm) => sm.materialId === mat.id)) {
+      toast.error('未選択または既に登録済みです');
+      return;
+    }
+    const newLink = {
+      materialId: mat.id,
+      materialName: mat.name,
+      unit: mat.unit,
+      isPreferred: false,
+    };
+    setCustomers((prev) =>
+      prev.map((c) =>
+        c.id === supplier.id
+          ? { ...c, supplierMaterials: [...(c.supplierMaterials ?? []), newLink] }
+          : c
+      )
+    );
+    toast.success('材料を紐づけました');
+    setAddMaterialOpen(false);
+    setSelectedMaterialIdToAdd('');
+  };
+
+  const updatePreferred = (materialId: string, isPreferred: boolean) => {
+    setCustomers((prev) =>
+      prev.map((c) =>
+        c.id === supplier.id
+          ? {
+              ...c,
+              supplierMaterials: (c.supplierMaterials ?? []).map((sm) =>
+                sm.materialId === materialId ? { ...sm, isPreferred } : sm
+              ),
+            }
+          : c
+      )
+    );
+    toast.success('優先仕入先フラグを更新しました');
+  };
+
+  const removeMaterialLink = (materialId: string, materialName: string) => {
+    setDeleteConfirm({ materialId, materialName });
+  };
+
+  const doRemoveMaterialLink = () => {
+    if (!deleteConfirm) return;
+    setCustomers((prev) =>
+      prev.map((c) =>
+        c.id === supplier.id
+          ? { ...c, supplierMaterials: (c.supplierMaterials ?? []).filter((sm) => sm.materialId !== deleteConfirm.materialId) }
+          : c
+      )
+    );
+    toast.success('紐づけを削除しました');
+    setDeleteConfirm(null);
+  };
+
+  const supplierMaterials = supplier.supplierMaterials ?? [];
 
   const materialPriceHistory = useMemo(() => {
     const historyList: Array<{
@@ -148,12 +179,8 @@ const SupplierDetail: React.FC<SupplierDetailProps> = ({
   };
 
   const statusLabels: Record<string, string> = {
-    ordered: '進行中',
-    confirmed: '進行中',
-    shipping: '進行中',
-    delivered: '完了',
-    completed: '完了',
-    cancelled: '失注'
+    ordered: '発注済み',
+    not_ordered: '未発注',
   };
 
   return (
@@ -202,33 +229,52 @@ const SupplierDetail: React.FC<SupplierDetailProps> = ({
       </Card>
 
       <div className="space-y-4">
-        <div className="flex items-center space-x-2 pb-2 border-b-2 border-border">
-          <Package className="w-5 h-5 text-primary" />
-          <h2 className="text-base font-semibold">取扱材料一覧</h2>
+        <div className="flex items-center justify-between pb-2 border-b-2 border-border">
+          <div className="flex items-center space-x-2">
+            <Package className="w-5 h-5 text-primary" />
+            <h2 className="text-base font-semibold">取扱材料（US-1004）</h2>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => setAddMaterialOpen(true)}>
+            <Plus className="w-4 h-4 mr-1" />材料を追加
+          </Button>
         </div>
         <Card>
           <CardContent className="p-0">
-            {supplier.supplierMaterials && supplier.supplierMaterials.length > 0 ? (
+            {supplierMaterials.length > 0 ? (
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>材料名</TableHead>
+                    <TableHead>品目名</TableHead>
                     <TableHead className="w-32">単位</TableHead>
                     <TableHead className="w-32">優先仕入先</TableHead>
-                    <TableHead>備考</TableHead>
+                    <TableHead className="w-24">操作</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {supplier.supplierMaterials.map((material, index) => (
-                    <TableRow key={index}>
+                  {supplierMaterials.map((material) => (
+                    <TableRow key={material.materialId}>
                       <TableCell className="font-medium">{material.materialName}</TableCell>
                       <TableCell className="text-sm">{material.unit || '-'}</TableCell>
                       <TableCell>
-                        {material.isPreferred && (
-                          <Badge className="bg-primary text-white">優先</Badge>
-                        )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8"
+                          onClick={() => updatePreferred(material.materialId, !material.isPreferred)}
+                        >
+                          {material.isPreferred ? <Badge className="bg-primary text-white">優先</Badge> : <Badge variant="outline">—</Badge>}
+                        </Button>
                       </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">{material.memo || '-'}</TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-1">
+                          <Button variant="ghost" size="sm" className="h-8 w-8 p-0" title="編集（優先フラグ）" onClick={() => updatePreferred(material.materialId, !material.isPreferred)}>
+                            <Pencil className="w-4 h-4" />
+                          </Button>
+                          <Button variant="ghost" size="sm" className="h-8 w-8 p-0 text-destructive" title="削除" onClick={() => removeMaterialLink(material.materialId, material.materialName)}>
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -236,12 +282,52 @@ const SupplierDetail: React.FC<SupplierDetailProps> = ({
             ) : (
               <div className="text-center py-12 text-muted-foreground">
                 <Package className="w-12 h-12 mx-auto opacity-20 mb-2" />
-                <p>登録された材料はありません</p>
+                <p>登録された材料はありません。「材料を追加」から材料マスタで紐づけできます。</p>
               </div>
             )}
           </CardContent>
         </Card>
       </div>
+
+      <Dialog open={addMaterialOpen} onOpenChange={setAddMaterialOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>材料を追加（US-0306）</DialogTitle>
+          </DialogHeader>
+          <div className="py-4">
+            <Label>材料マスタから品目を選択</Label>
+            <Select value={selectedMaterialIdToAdd} onValueChange={setSelectedMaterialIdToAdd}>
+              <SelectTrigger className="mt-2">
+                <SelectValue placeholder="選択..." />
+              </SelectTrigger>
+              <SelectContent>
+                {materials
+                  .filter((m) => !supplierMaterials.some((sm) => sm.materialId === m.id))
+                  .map((m) => (
+                    <SelectItem key={m.id} value={m.id}>{m.name}（{m.unit}）</SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAddMaterialOpen(false)}>キャンセル</Button>
+            <Button onClick={addMaterialLink}>紐づけ登録</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={!!deleteConfirm} onOpenChange={(open) => !open && setDeleteConfirm(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>紐づけを削除しますか？</AlertDialogTitle>
+            <AlertDialogDescription>{deleteConfirm ? `「${deleteConfirm.materialName}」の紐づけを削除します。` : ''}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>キャンセル</AlertDialogCancel>
+            <AlertDialogAction onClick={doRemoveMaterialLink} className="bg-destructive text-destructive-foreground">削除</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <div className="space-y-4">
         <div className="flex items-center space-x-2 pb-2 border-b-2 border-border">
@@ -262,14 +348,18 @@ const SupplierDetail: React.FC<SupplierDetailProps> = ({
                 </TableHeader>
                 <TableBody>
                   {supplierOrders.map((order) => (
-                    <TableRow key={order.id}>
+                    <TableRow
+                      key={order.id}
+                      className={onOrderClick ? 'cursor-pointer hover:bg-muted/50' : ''}
+                      onClick={() => onOrderClick?.(order.id)}
+                    >
                       <TableCell>
                         <span className="text-primary font-medium">{order.id}</span>
                       </TableCell>
                       <TableCell className="font-medium">{order.projectName}</TableCell>
                       <TableCell className="text-sm">{order.orderDate.replace(/-/g, '/')}</TableCell>
                       <TableCell>
-                        <Badge className={statusColors[order.status] || 'bg-gray-500 text-white'}>
+                        <Badge className={statusColors[order.status] || 'bg-muted'}>
                           {statusLabels[order.status] || order.status}
                         </Badge>
                       </TableCell>

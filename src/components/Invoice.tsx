@@ -1,51 +1,41 @@
-import React, { useState, useMemo } from 'react';
-import { Card, CardContent } from './ui/card';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { Badge } from './ui/badge';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { Plus, Receipt, Download, Edit } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from './ui/dialog';
+import { Plus, Receipt, Download, Edit, Search, FileSpreadsheet, X } from 'lucide-react';
 import { toast } from 'sonner';
-import type { InvoiceRecord } from '../App';
+import * as XLSX from 'xlsx';
+import type { InvoiceRecord, InvoiceLineItem } from '../App';
+import type { EstimateRecord } from '../App';
+import type { CustomerRecord } from './Customer';
+import { useAudit } from '../contexts/AuditContext';
+import { useAuth } from '../contexts/AuthContext';
 
-interface Customer {
-  id: string;
-  companyName: string;
-  type: string;
-  isActive?: boolean;
+function getBasicSettings(): { taxRate: number; taxRounding: 'half' | 'down' | 'up' } {
+  try {
+    const saved = localStorage.getItem('lets_basic_settings');
+    if (saved) {
+      const p = JSON.parse(saved);
+      return { taxRate: Number(p.taxRate) || 10, taxRounding: p.taxRounding || 'half' };
+    }
+  } catch (_) {}
+  return { taxRate: 10, taxRounding: 'half' as const };
 }
 
-interface QuoteProject {
-  id: string;
-  customerName: string;
-  projectName: string;
-  totalAmount: number;
+function calcTaxAmount(subtotal: number, taxRate: number, rounding: 'half' | 'down' | 'up'): number {
+  const raw = subtotal * (taxRate / 100);
+  if (rounding === 'down') return Math.floor(raw);
+  if (rounding === 'up') return Math.ceil(raw);
+  return Math.round(raw);
 }
-
-interface InvoiceProps {
-  invoices: InvoiceRecord[];
-  setInvoices: React.Dispatch<React.SetStateAction<InvoiceRecord[]>>;
-  quoteProjects: QuoteProject[];
-  customers: Customer[];
-}
-
-const statusColors: Record<string, string> = {
-  draft: 'bg-gray-500 text-white',
-  issued: 'bg-green-500 text-white',
-  cancelled: 'bg-red-500 text-white',
-};
-const statusLabels: Record<string, string> = {
-  draft: '下書き',
-  issued: '発行済',
-  cancelled: '取消',
-};
 
 function nextInvoiceNumber(existing: InvoiceRecord[]): string {
-  const now = new Date();
-  const yyyymm = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const yyyymm = new Date().toISOString().slice(0, 7).replace(/-/, '');
   const prefix = `INV-${yyyymm}-`;
   const nums = existing
     .filter((inv) => inv.invoiceNumber.startsWith(prefix))
@@ -54,175 +44,438 @@ function nextInvoiceNumber(existing: InvoiceRecord[]): string {
   return `${prefix}${next}`;
 }
 
-const Invoice: React.FC<InvoiceProps> = ({ invoices, setInvoices, quoteProjects, customers }) => {
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState({
-    customerId: '',
-    projectName: '',
-    totalAmount: '',
-    dueDate: '',
-    status: 'draft' as InvoiceRecord['status'],
-  });
+interface QuoteProject {
+  id: string;
+  customerName: string;
+  projectName: string;
+  totalAmount: number;
+  quoteItems?: Array<{ item: string; quantity: number; unit: string; unitPrice?: number; amount?: number }>;
+  extractedItems?: Array<{ item: string; quantity: number; unit: string }>;
+}
+
+interface InvoiceProps {
+  invoices: InvoiceRecord[];
+  setInvoices: React.Dispatch<React.SetStateAction<InvoiceRecord[]>>;
+  quoteProjects: QuoteProject[];
+  customers: CustomerRecord[];
+  estimates: EstimateRecord[];
+  openInvoiceId?: string | null;
+  setOpenInvoiceId?: React.Dispatch<React.SetStateAction<string | null>>;
+}
+
+const statusLabels: Record<string, string> = {
+  draft: '下書き',
+  issued: '発行済',
+  cancelled: '取消',
+};
+
+const Invoice: React.FC<InvoiceProps> = ({ invoices, setInvoices, quoteProjects, customers, estimates, openInvoiceId, setOpenInvoiceId }) => {
+  const { log: auditLog } = useAudit();
+  const { session } = useAuth();
+  const userId = session?.user?.id ?? '';
+
+  const [listKeyword, setListKeyword] = useState('');
+  const [listStatus, setListStatus] = useState<string>('all');
+  const [listDateFrom, setListDateFrom] = useState('');
+  const [listDateTo, setListDateTo] = useState('');
+  const [detailId, setDetailId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (openInvoiceId && invoices.some((i) => i.id === openInvoiceId)) {
+      setDetailId(openInvoiceId);
+      setOpenInvoiceId?.(null);
+    }
+  }, [openInvoiceId, invoices]);
+  const [createSource, setCreateSource] = useState<'estimate' | 'project' | null>(null);
+  const [createEstimateId, setCreateEstimateId] = useState('');
+  const [createProjectId, setCreateProjectId] = useState('');
 
   const customerOptions = useMemo(
     () => customers.filter((c) => c.type === 'customer' && c.isActive !== false),
     [customers]
   );
 
-  const projectsForCustomer = useMemo(() => {
-    if (!form.customerId) return [];
-    const name = customers.find((c) => c.id === form.customerId)?.companyName ?? '';
-    return quoteProjects.filter((p) => p.customerName === name);
-  }, [form.customerId, customers, quoteProjects]);
+  const filteredList = useMemo(() => {
+    let list = invoices;
+    if (listKeyword.trim()) {
+      const k = listKeyword.toLowerCase();
+      list = list.filter(
+        (inv) =>
+          inv.customerName.toLowerCase().includes(k) ||
+          inv.projectName.toLowerCase().includes(k) ||
+          inv.invoiceNumber.toLowerCase().includes(k)
+      );
+    }
+    if (listStatus !== 'all') list = list.filter((inv) => inv.status === listStatus);
+    if (listDateFrom) list = list.filter((inv) => inv.lastUpdated >= listDateFrom);
+    if (listDateTo) list = list.filter((inv) => inv.lastUpdated <= listDateTo);
+    return list;
+  }, [invoices, listKeyword, listStatus, listDateFrom, listDateTo]);
 
-  const openCreate = () => {
-    setEditingId(null);
-    setForm({
-      customerId: customerOptions[0]?.id ?? '',
-      projectName: '',
-      totalAmount: '',
-      dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+  const selectedInvoice = useMemo(() => invoices.find((i) => i.id === detailId) ?? null, [invoices, detailId]);
+
+  const openCreateFromEstimate = () => {
+    const confirmed = estimates.filter((e) => e.status === 'confirmed' && e.items.length > 0);
+    if (confirmed.length === 0) {
+      toast.error('確定済みの見積がありません');
+      return;
+    }
+    setCreateSource('estimate');
+    setCreateEstimateId(confirmed[0].id);
+    setCreateProjectId('');
+    setDetailId(null);
+  };
+
+  const openCreateFromProject = () => {
+    if (quoteProjects.length === 0) {
+      toast.error('案件がありません');
+      return;
+    }
+    setCreateSource('project');
+    setCreateProjectId(quoteProjects[0].id);
+    setCreateEstimateId('');
+    setDetailId(null);
+  };
+
+  const createInvoice = useCallback(() => {
+    const { taxRate, taxRounding } = getBasicSettings();
+    const now = new Date().toISOString().split('T')[0];
+    const invNum = nextInvoiceNumber(invoices);
+    const newId = `inv-${Date.now()}`;
+
+    let customerId = '';
+    let customerName = '';
+    let projectName = '';
+    let billingDayDisplay: number | undefined;
+    let contactPerson = '';
+    let items: InvoiceLineItem[] = [];
+    let subtotal = 0;
+
+    if (createSource === 'estimate' && createEstimateId) {
+      const est = estimates.find((e) => e.id === createEstimateId);
+      if (!est) return;
+      customerId = est.customerId;
+      customerName = est.customerName;
+      projectName = est.projectName;
+      const cust = customers.find((c) => c.id === est.customerId);
+      billingDayDisplay = cust?.billingDay;
+      contactPerson = cust?.contactPerson ?? '';
+      items = est.items.map((it, idx) => {
+        const amt = it.quantity * it.unitPrice;
+        subtotal += amt;
+        return {
+          id: `li-${idx}`,
+          item: it.item,
+          quantity: it.quantity,
+          unit: it.unit,
+          unitPrice: it.unitPrice,
+          amount: amt,
+        };
+      });
+    } else if (createSource === 'project' && createProjectId) {
+      const proj = quoteProjects.find((p) => p.id === createProjectId);
+      if (!proj) return;
+      customerName = proj.customerName;
+      projectName = proj.projectName;
+      const cust = customers.find((c) => c.companyName === proj.customerName);
+      customerId = cust?.id ?? '';
+      billingDayDisplay = cust?.billingDay;
+      contactPerson = cust?.contactPerson ?? '';
+      const sourceItems = proj.quoteItems?.length ? proj.quoteItems : (proj.extractedItems ?? []).map((e) => ({ ...e, unitPrice: 0, amount: e.quantity * 0 }));
+      sourceItems.forEach((it, idx) => {
+        const amount = 'amount' in it && it.amount != null ? it.amount : it.quantity * ((it as any).unitPrice ?? 0);
+        subtotal += amount;
+        items.push({
+          id: `li-${idx}`,
+          item: it.item,
+          quantity: it.quantity,
+          unit: it.unit ?? '式',
+          unitPrice: 'unitPrice' in it ? (it as any).unitPrice : 0,
+          amount,
+        });
+      });
+      if (items.length === 0 && proj.totalAmount > 0) {
+        items = [{ id: 'li-0', item: '工事請負', quantity: 1, unit: '式', unitPrice: proj.totalAmount, amount: proj.totalAmount }];
+        subtotal = proj.totalAmount;
+      }
+    } else return;
+
+    const taxAmount = calcTaxAmount(subtotal, taxRate, taxRounding);
+    const totalAmount = subtotal + taxAmount;
+    const newInv: InvoiceRecord = {
+      id: newId,
+      invoiceNumber: invNum,
+      customerId,
+      customerName,
+      projectName,
       status: 'draft',
-    });
-    setDialogOpen(true);
-  };
+      billingDayDisplay,
+      contactPerson,
+      items,
+      subtotal,
+      taxAmount,
+      totalAmount,
+      lastUpdated: now,
+      updateHistory: [{ at: new Date().toISOString(), action: '請求書作成' }],
+    };
+    setInvoices((prev) => [...prev, newInv]);
+    auditLog({ userId, action: '請求書作成', targetId: newId, result: 'success' });
+    toast.success('請求書を作成しました');
+    setCreateSource(null);
+    setDetailId(newId);
+  }, [
+    createSource,
+    createEstimateId,
+    createProjectId,
+    estimates,
+    quoteProjects,
+    customers,
+    invoices,
+    setInvoices,
+    auditLog,
+    userId,
+  ]);
 
-  const openEdit = (inv: InvoiceRecord) => {
-    const cust = customers.find((c) => c.companyName === inv.customerName);
-    setEditingId(inv.id);
-    setForm({
-      customerId: cust?.id ?? '',
-      projectName: inv.projectName,
-      totalAmount: String(inv.totalAmount),
-      dueDate: inv.dueDate ?? '',
-      status: inv.status,
-    });
-    setDialogOpen(true);
-  };
+  const updateInvoiceItem = useCallback(
+    (invId: string, itemId: string, patch: Partial<InvoiceLineItem>) => {
+      const { taxRate, taxRounding } = getBasicSettings();
+      setInvoices((prev) =>
+        prev.map((inv) => {
+          if (inv.id !== invId) return inv;
+          const newItems = inv.items.map((it) => {
+            if (it.id !== itemId) return it;
+            const next = { ...it, ...patch };
+            if (typeof next.quantity === 'number' && typeof next.unitPrice === 'number')
+              next.amount = next.quantity * next.unitPrice;
+            return next;
+          });
+          const subtotal = newItems.reduce((s, i) => s + i.amount, 0);
+          const taxAmount = calcTaxAmount(subtotal, taxRate, taxRounding);
+          const totalAmount = subtotal + taxAmount;
+          const now = new Date().toISOString();
+          return {
+            ...inv,
+            items: newItems,
+            subtotal,
+            taxAmount,
+            totalAmount,
+            lastUpdated: now.split('T')[0],
+            updateHistory: [...(inv.updateHistory ?? []), { at: now, action: '明細編集' }],
+          };
+        })
+      );
+    },
+    [setInvoices]
+  );
 
-  const handleSubmit = () => {
-    const customerName = customers.find((c) => c.id === form.customerId)?.companyName ?? form.customerId;
-    if (!customerName) {
-      toast.error('顧客を選択してください');
-      return;
-    }
-    if (!form.projectName.trim()) {
-      toast.error('案件名を入力してください');
-      return;
-    }
-    const amount = Number(form.totalAmount) || 0;
-    if (amount <= 0) {
-      toast.error('合計金額を入力してください');
-      return;
-    }
-
-    const today = new Date().toISOString().split('T')[0];
-
-    if (editingId) {
+  const addInvoiceRow = useCallback(
+    (invId: string) => {
       setInvoices((prev) =>
         prev.map((inv) =>
-          inv.id === editingId
+          inv.id === invId
             ? {
                 ...inv,
-                customerName,
-                projectName: form.projectName.trim(),
-                totalAmount: amount,
-                dueDate: form.dueDate || undefined,
-                status: form.status,
-                lastUpdated: today,
+                items: [
+                  ...inv.items,
+                  { id: `li-${Date.now()}`, item: '', quantity: 0, unit: '式', unitPrice: 0, amount: 0 },
+                ],
               }
             : inv
         )
       );
-      toast.success('請求書を更新しました');
-    } else {
-      const id = 'inv' + (Math.max(0, ...invoices.map((i) => parseInt(i.id.replace(/\D/g, '') || '0', 10))) + 1);
-      const invoiceNumber = nextInvoiceNumber(invoices);
-      setInvoices((prev) => [
-        ...prev,
-        {
-          id,
-          invoiceNumber,
-          customerName,
-          projectName: form.projectName.trim(),
-          status: form.status,
-          totalAmount: amount,
-          lastUpdated: today,
-          dueDate: form.dueDate || undefined,
-        },
-      ]);
-      toast.success('請求書を作成しました');
-    }
-    setDialogOpen(false);
-  };
+    },
+    [setInvoices]
+  );
 
-  const applyProject = (project: QuoteProject) => {
-    setForm((f) => ({
-      ...f,
-      projectName: project.projectName,
-      totalAmount: String(project.totalAmount),
-    }));
-  };
+  const removeInvoiceRow = useCallback(
+    (invId: string, itemId: string) => {
+      const { taxRate, taxRounding } = getBasicSettings();
+      setInvoices((prev) =>
+        prev.map((inv) => {
+          if (inv.id !== invId) return inv;
+          const newItems = inv.items.filter((i) => i.id !== itemId);
+          const subtotal = newItems.reduce((s, i) => s + i.amount, 0);
+          const taxAmount = calcTaxAmount(subtotal, taxRate, taxRounding);
+          const now = new Date().toISOString();
+          return {
+            ...inv,
+            items: newItems,
+            subtotal,
+            taxAmount,
+            totalAmount: subtotal + taxAmount,
+            lastUpdated: now.split('T')[0],
+            updateHistory: [...(inv.updateHistory ?? []), { at: now, action: '明細編集' }],
+          };
+        })
+      );
+    },
+    [setInvoices]
+  );
+
+  const saveInvoice = useCallback(
+    (inv: InvoiceRecord) => {
+      setInvoices((prev) => prev.map((i) => (i.id === inv.id ? { ...inv, lastUpdated: new Date().toISOString().split('T')[0] } : i)));
+      auditLog({ userId, action: '請求書保存', targetId: inv.id, result: 'success' });
+      toast.success('請求書を保存しました');
+    },
+    [setInvoices, auditLog, userId]
+  );
+
+  const exportExcel = useCallback(
+    (inv: InvoiceRecord) => {
+      const wsData: (string | number)[][] = [
+        ['請求書'],
+        ['請求番号（内部）', inv.invoiceNumber],
+        ['顧客名', inv.customerName],
+        ['案件名', inv.projectName],
+        ['請求日', inv.billingDayDisplay != null ? (inv.billingDayDisplay === 99 ? '月末' : `${inv.billingDayDisplay}日締め`) : ''],
+        inv.contactPerson ? ['担当者', inv.contactPerson] : [],
+        [],
+        ['品目', '数量', '単位', '単価', '金額'],
+        ...inv.items.map((i) => [i.item, i.quantity, i.unit, i.unitPrice, i.amount]),
+        [],
+        ['小計', '', '', '', inv.subtotal],
+        [`消費税（${getBasicSettings().taxRate}%）`, '', '', '', inv.taxAmount],
+        ['合計', '', '', '', inv.totalAmount],
+      ].filter((row) => row.length > 0) as (string | number)[][];
+      const ws = XLSX.utils.aoa_to_sheet(wsData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, '請求書');
+      XLSX.writeFile(wb, `請求書_${inv.invoiceNumber}.xlsx`);
+      toast.success('Excelをダウンロードしました');
+    },
+    []
+  );
 
   return (
     <div className="p-6 max-w-screen-2xl mx-auto space-y-6">
       <div className="flex items-start justify-between">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold">請求書管理</h1>
-          <p className="text-muted-foreground">請求書の作成・発行・管理</p>
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">請求（F-12）</h1>
+          <p className="text-muted-foreground">請求書の作成・編集・Excel出力。請求番号は内部管理用です。</p>
         </div>
-        <Button className="flex items-center space-x-2" onClick={openCreate}>
-          <Plus className="w-4 h-4" />
-          <span>新規請求書作成</span>
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={openCreateFromEstimate}>
+            <Plus className="w-4 h-4 mr-2" />
+            見積から作成
+          </Button>
+          <Button onClick={openCreateFromProject}>
+            <Plus className="w-4 h-4 mr-2" />
+            案件から作成
+          </Button>
+        </div>
       </div>
 
+      {/* 作成元選択 */}
+      <Dialog open={createSource !== null} onOpenChange={(o) => !o && setCreateSource(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>請求書を作成（US-1011）</DialogTitle>
+            <DialogDescription>
+              見積（確定）または案件から請求を作成します。請求日は顧客マスタの請求日が初期値です。税率・端数はシステム設定を使用します。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            {createSource === 'estimate' && (
+              <>
+                <Label>見積を選択</Label>
+                <Select value={createEstimateId} onValueChange={setCreateEstimateId}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {estimates
+                      .filter((e) => e.status === 'confirmed' && e.items.length > 0)
+                      .map((e) => (
+                        <SelectItem key={e.id} value={e.id}>
+                          {e.projectName}（{e.estimateNumber}）
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </>
+            )}
+            {createSource === 'project' && (
+              <>
+                <Label>案件を選択</Label>
+                <Select value={createProjectId} onValueChange={setCreateProjectId}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {quoteProjects.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.projectName} — {p.customerName}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCreateSource(null)}>キャンセル</Button>
+            <Button onClick={createInvoice}>請求書を作成</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 一覧（US-1015） */}
       <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center justify-between">
+            <span>請求一覧</span>
+            <Badge variant="outline">{filteredList.length}件</Badge>
+          </CardTitle>
+          <div className="flex flex-wrap items-center gap-4 mt-4">
+            <div className="relative flex-1 min-w-[200px]">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input placeholder="請求番号・顧客・案件で検索..." value={listKeyword} onChange={(e) => setListKeyword(e.target.value)} className="pl-10" />
+            </div>
+            <Select value={listStatus} onValueChange={setListStatus}>
+              <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">すべて</SelectItem>
+                <SelectItem value="draft">下書き</SelectItem>
+                <SelectItem value="issued">発行済</SelectItem>
+                <SelectItem value="cancelled">取消</SelectItem>
+              </SelectContent>
+            </Select>
+            <Input type="date" placeholder="更新日から" value={listDateFrom} onChange={(e) => setListDateFrom(e.target.value)} className="w-40" />
+            <Input type="date" placeholder="更新日まで" value={listDateTo} onChange={(e) => setListDateTo(e.target.value)} className="w-40" />
+          </div>
+        </CardHeader>
         <CardContent className="p-0">
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>請求番号</TableHead>
-                <TableHead>顧客名</TableHead>
+                <TableHead>顧客</TableHead>
                 <TableHead>案件名</TableHead>
-                <TableHead className="w-32">ステータス</TableHead>
-                <TableHead className="text-right w-40">合計金額</TableHead>
-                <TableHead className="w-28">支払期限</TableHead>
-                <TableHead className="w-32">最終更新日</TableHead>
-                <TableHead className="w-36 text-center">操作</TableHead>
+                <TableHead className="w-28">状態</TableHead>
+                <TableHead className="text-right w-36">金額</TableHead>
+                <TableHead className="w-32">更新日</TableHead>
+                <TableHead className="w-24"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {invoices.length === 0 ? (
+              {filteredList.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="text-center text-muted-foreground py-12">
-                    請求書がありません。「新規請求書作成」から追加してください。
+                  <TableCell colSpan={7} className="text-center py-12 text-muted-foreground">
+                    条件に一致する請求がありません
                   </TableCell>
                 </TableRow>
               ) : (
-                invoices.map((invoice) => (
-                  <TableRow key={invoice.id}>
+                filteredList.map((inv) => (
+                  <TableRow key={inv.id}>
+                    <TableCell className="font-medium">{inv.invoiceNumber}</TableCell>
+                    <TableCell>{inv.customerName}</TableCell>
+                    <TableCell>{inv.projectName}</TableCell>
+                    <TableCell><Badge variant={inv.status === 'issued' ? 'default' : 'secondary'}>{statusLabels[inv.status]}</Badge></TableCell>
+                    <TableCell className="text-right">¥{inv.totalAmount.toLocaleString()}</TableCell>
+                    <TableCell className="text-sm">{inv.lastUpdated}</TableCell>
                     <TableCell>
-                      <span className="text-primary font-medium cursor-pointer hover:underline">{invoice.invoiceNumber}</span>
-                    </TableCell>
-                    <TableCell className="font-medium">{invoice.customerName}</TableCell>
-                    <TableCell>{invoice.projectName}</TableCell>
-                    <TableCell>
-                      <Badge className={statusColors[invoice.status]}>{statusLabels[invoice.status]}</Badge>
-                    </TableCell>
-                    <TableCell className="text-right font-medium">¥{invoice.totalAmount.toLocaleString()}</TableCell>
-                    <TableCell className="text-sm">{invoice.dueDate ?? '-'}</TableCell>
-                    <TableCell className="text-sm">{invoice.lastUpdated}</TableCell>
-                    <TableCell>
-                      <div className="flex items-center justify-center gap-1">
-                        <Button variant="ghost" size="sm" className="h-8 w-8 p-0" title="編集" onClick={() => openEdit(invoice)}>
-                          <Edit className="w-4 h-4" />
-                        </Button>
-                        <Button variant="ghost" size="sm" className="h-8 w-8 p-0" title="PDF出力" onClick={() => toast.success('PDFをダウンロードしました（デモ）')}>
-                          <Download className="w-4 h-4" />
-                        </Button>
-                      </div>
+                      <Button variant="ghost" size="sm" onClick={() => setDetailId(inv.id)}><Edit className="w-4 h-4 mr-1" />開く</Button>
                     </TableCell>
                   </TableRow>
                 ))
@@ -232,96 +485,129 @@ const Invoice: React.FC<InvoiceProps> = ({ invoices, setInvoices, quoteProjects,
         </CardContent>
       </Card>
 
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-md">
+      {/* 請求詳細・編集（US-1012, 1013, 1014） */}
+      <Dialog open={!!selectedInvoice} onOpenChange={(o) => !o && setDetailId(null)}>
+        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{editingId ? '請求書の編集' : '新規請求書作成'}</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label>顧客 *</Label>
-              <Select value={form.customerId} onValueChange={(v) => setForm((f) => ({ ...f, customerId: v, projectName: '' }))}>
-                <SelectTrigger>
-                  <SelectValue placeholder="顧客を選択" />
-                </SelectTrigger>
-                <SelectContent>
-                  {customerOptions.map((c) => (
-                    <SelectItem key={c.id} value={c.id}>
-                      {c.companyName}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            {projectsForCustomer.length > 0 && (
-              <div className="space-y-2">
-                <Label>案件を選択（見積から流用）</Label>
-                <Select
-                  value=""
-                  onValueChange={(projectId) => {
-                    const p = quoteProjects.find((q) => q.id === projectId);
-                    if (p) applyProject(p);
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="案件を選ぶと案件名・金額を自動入力" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {projectsForCustomer.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        {p.projectName} — ¥{p.totalAmount.toLocaleString()}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+            <DialogTitle className="flex items-center justify-between">
+              <span>請求書 {selectedInvoice?.invoiceNumber}</span>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => selectedInvoice && exportExcel(selectedInvoice)}>
+                  <FileSpreadsheet className="w-4 h-4 mr-1" />Excel出力
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => setDetailId(null)}><X className="w-4 h-4" /></Button>
               </div>
-            )}
-            <div className="space-y-2">
-              <Label>案件名 *</Label>
-              <Input
-                value={form.projectName}
-                onChange={(e) => setForm((f) => ({ ...f, projectName: e.target.value }))}
-                placeholder="内装工事（品川）"
-              />
+            </DialogTitle>
+            <DialogDescription>明細はいつでも編集可能。保存で更新履歴が残ります。電話番号・メールは印字しません。</DialogDescription>
+          </DialogHeader>
+          {selectedInvoice && (
+            <div className="space-y-4 py-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label>顧客名</Label>
+                  <p className="font-medium">{selectedInvoice.customerName}</p>
+                </div>
+                <div>
+                  <Label>案件名</Label>
+                  <p className="font-medium">{selectedInvoice.projectName}</p>
+                </div>
+                <div>
+                  <Label>請求日（表示用）</Label>
+                  <p className="font-medium">
+                    {selectedInvoice.billingDayDisplay != null
+                      ? selectedInvoice.billingDayDisplay === 99
+                        ? '月末締め'
+                        : `${selectedInvoice.billingDayDisplay}日締め`
+                      : '—'}
+                  </p>
+                </div>
+                <div>
+                  <Label>担当者</Label>
+                  <Input
+                    value={selectedInvoice.contactPerson ?? ''}
+                    onChange={(e) =>
+                      setInvoices((prev) => prev.map((i) => (i.id === selectedInvoice.id ? { ...i, contactPerson: e.target.value } : i)))
+                    }
+                    placeholder="担当者名"
+                  />
+                </div>
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <Label>明細（編集可・合計再計算）</Label>
+                  <Button variant="outline" size="sm" onClick={() => addInvoiceRow(selectedInvoice.id)}><Plus className="w-4 h-4 mr-1" />行追加</Button>
+                </div>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>品目</TableHead>
+                      <TableHead className="w-24">数量</TableHead>
+                      <TableHead className="w-24">単位</TableHead>
+                      <TableHead className="w-28">単価</TableHead>
+                      <TableHead className="w-28">金額</TableHead>
+                      <TableHead className="w-12"></TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {selectedInvoice.items.map((it) => (
+                      <TableRow key={it.id}>
+                        <TableCell>
+                          <Input
+                            value={it.item}
+                            onChange={(e) => updateInvoiceItem(selectedInvoice.id, it.id, { item: e.target.value })}
+                            className="h-9"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Input
+                            type="number"
+                            min={0}
+                            value={it.quantity}
+                            onChange={(e) => updateInvoiceItem(selectedInvoice.id, it.id, { quantity: Number(e.target.value) || 0 })}
+                            className="h-9 w-20"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Input
+                            value={it.unit}
+                            onChange={(e) => updateInvoiceItem(selectedInvoice.id, it.id, { unit: e.target.value })}
+                            className="h-9 w-20"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Input
+                            type="number"
+                            min={0}
+                            value={it.unitPrice}
+                            onChange={(e) => updateInvoiceItem(selectedInvoice.id, it.id, { unitPrice: Number(e.target.value) || 0 })}
+                            className="h-9 w-24"
+                          />
+                        </TableCell>
+                        <TableCell className="font-medium">{it.amount.toLocaleString()}</TableCell>
+                        <TableCell>
+                          <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={() => removeInvoiceRow(selectedInvoice.id, it.id)}><X className="w-4 h-4" /></Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+              <div className="flex justify-end gap-4 text-sm">
+                <span>小計: ¥{selectedInvoice.subtotal.toLocaleString()}</span>
+                <span>消費税: ¥{selectedInvoice.taxAmount.toLocaleString()}</span>
+                <span className="font-bold">合計: ¥{selectedInvoice.totalAmount.toLocaleString()}</span>
+              </div>
+              {selectedInvoice.updateHistory && selectedInvoice.updateHistory.length > 0 && (
+                <div className="text-xs text-muted-foreground">
+                  更新履歴: {selectedInvoice.updateHistory.slice(-3).map((e) => e.action).join(' → ')}
+                </div>
+              )}
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setDetailId(null)}>閉じる</Button>
+                <Button onClick={() => saveInvoice(selectedInvoice)}>保存（US-1013）</Button>
+              </DialogFooter>
             </div>
-            <div className="space-y-2">
-              <Label>合計金額（円） *</Label>
-              <Input
-                type="number"
-                min={1}
-                value={form.totalAmount}
-                onChange={(e) => setForm((f) => ({ ...f, totalAmount: e.target.value }))}
-                placeholder="168850"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>支払期限</Label>
-              <Input
-                type="date"
-                value={form.dueDate}
-                onChange={(e) => setForm((f) => ({ ...f, dueDate: e.target.value }))}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>ステータス</Label>
-              <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as InvoiceRecord['status'] }))}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="draft">{statusLabels.draft}</SelectItem>
-                  <SelectItem value="issued">{statusLabels.issued}</SelectItem>
-                  <SelectItem value="cancelled">{statusLabels.cancelled}</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>
-              キャンセル
-            </Button>
-            <Button onClick={handleSubmit}>{editingId ? '更新' : '作成'}</Button>
-          </DialogFooter>
+          )}
         </DialogContent>
       </Dialog>
     </div>

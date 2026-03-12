@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -6,13 +6,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Badge } from './ui/badge';
-import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './ui/dialog';
 import { Label } from './ui/label';
 import { Separator } from './ui/separator';
 import { toast } from 'sonner';
+import { useAudit } from '../contexts/AuditContext';
 import {
-  ChevronLeft, ChevronRight, Filter, Edit3, Calendar, Users, Plus, X, Palette, Building2, Move
+  ChevronLeft, ChevronRight, Filter, Calendar, Users, Plus, X, Building2, Move, Trash2
 } from 'lucide-react';
 
 interface GanttItem {
@@ -44,6 +44,8 @@ interface ProjectAssignment {
   name: string;
   hours: number;
   color: string;
+  /** ガントタスクID（割当同期用 US-0712） */
+  taskId?: number;
 }
 
 interface ProcessProps {
@@ -57,13 +59,16 @@ const projectColors = ['#0052CC', '#36B37E', '#FFAB00', '#DE350B', '#6554C0', '#
 const assigneeList = ['田中太郎', '佐藤花子', '山田次郎', '鈴木一郎', '高橋美咲', '渡辺健太'];
 
 const Process: React.FC<ProcessProps> = () => {
+  const { log: auditLog } = useAudit();
   const [projectFilter, setProjectFilter] = useState<string>('all');
   const [currentWeek, setCurrentWeek] = useState('今週');
+  const [calendarPersonFilter, setCalendarPersonFilter] = useState<string>('all');
   const [editingCell, setEditingCell] = useState<string | null>(null);
   const [editingLocation, setEditingLocation] = useState<number | null>(null);
   const [editingLocationValue, setEditingLocationValue] = useState('');
-  const [selectedProject, setSelectedProject] = useState<any>(null);
+  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
   const [projectModalOpen, setProjectModalOpen] = useState(false);
+  const selectedProject = selectedProjectId != null ? ganttData.find(p => p.id === selectedProjectId) ?? null : null;
   const [newProjectModalOpen, setNewProjectModalOpen] = useState(false);
   const [addingToCell, setAddingToCell] = useState<{ personId: number; day: typeof weekdayKeys[number] } | null>(null);
   const [selectedProjectForCell, setSelectedProjectForCell] = useState<string>('new');
@@ -74,20 +79,32 @@ const Process: React.FC<ProcessProps> = () => {
   const [dragStartPos, setDragStartPos] = useState<{ x: number; y: number } | null>(null);
   const [isDragStarted, setIsDragStarted] = useState(false);
   const timelineRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const dragTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const getCurrentViewRange = () => {
+  /** US-0701: デフォルトは前月〜2ヶ月先（例: 3月なら2月〜5月）。過去・未来はクォーター単位 */
+  const getDefaultViewRange = () => {
     const today = new Date();
-    const currentYear = today.getFullYear();
-    let startMonth = today.getMonth();
-    let startYear = currentYear;
-    if (startMonth === 0) {
-      startMonth = 12;
-      startYear = currentYear - 1;
-    }
-    return { year: startYear, month: startMonth };
+    const y = today.getFullYear();
+    let m = today.getMonth(); // 0-indexed
+    m -= 1; // 前月
+    if (m < 0) { m += 12; }
+    const startMonth1Based = m + 1;
+    return { year: m < today.getMonth() ? y : y - 1, month: startMonth1Based };
   };
-  const [currentViewStart, setCurrentViewStart] = useState(getCurrentViewRange());
+  const [currentViewStart, setCurrentViewStart] = useState(getDefaultViewRange());
+
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el || el.scrollWidth <= el.clientWidth) return;
+    const today = new Date();
+    const firstDay = new Date(currentViewStart.year, currentViewStart.month - 1, 1);
+    const lastDay = new Date(currentViewStart.year, currentViewStart.month + 2, 0);
+    const totalDays = Math.ceil((lastDay.getTime() - firstDay.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+    const diffDays = Math.round((today.getTime() - firstDay.getTime()) / (1000 * 60 * 60 * 24));
+    const ratio = Math.max(0, Math.min(1, diffDays / totalDays));
+    el.scrollLeft = ratio * (el.scrollWidth - el.clientWidth) - el.clientWidth * 0.3;
+  }, [currentViewStart.month, currentViewStart.year]);
 
   const [newProjectData, setNewProjectData] = useState({
     project: '',
@@ -110,35 +127,82 @@ const Process: React.FC<ProcessProps> = () => {
     { id: 3, assignee: '山田次郎', monday: [], tuesday: [], wednesday: [{ id: '3-wed-1', name: 'C工場改装', hours: 8, color: '#FFAB00' }], thursday: [{ id: '3-thu-1', name: 'C工場改装', hours: 8, color: '#FFAB00' }], friday: [{ id: '3-fri-1', name: 'C工場改装', hours: 8, color: '#FFAB00' }], saturday: [{ id: '3-sat-1', name: 'C工場改装', hours: 6, color: '#FFAB00' }], sunday: [] }
   ]);
 
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'completed': return <Badge className="bg-green-600 text-white">完了</Badge>;
-      case 'in-progress': return <Badge className="bg-primary text-white">進行中</Badge>;
-      case 'scheduled': return <Badge className="bg-amber-500 text-black">予定</Badge>;
-      case 'delayed': return <Badge className="bg-red-600 text-white">遅延</Badge>;
-      default: return <Badge variant="outline">不明</Badge>;
-    }
-  };
-
   const updateGanttItem = (id: number, field: keyof GanttItem, value: any) => {
+    const current = ganttData.find(i => i.id === id);
+    if (!current) return;
+    const nextItem = { ...current, [field]: value };
+    if ((field === 'startDate' || field === 'endDate') && new Date(nextItem.endDate) < new Date(nextItem.startDate)) {
+      toast.error('終了日は開始日以降にしてください。保存できません。');
+      return;
+    }
     setGanttData(prev => prev.map(item => item.id === id ? { ...item, [field]: value } : item));
+    auditLog({ userId: '', action: '工程タスク更新', targetId: String(id), result: 'success' });
     toast.success('更新されました');
   };
 
-  const getQuarterMonths = () => {
+  /** US-0712: タスクの担当・期間をカレンダーに同期 */
+  const syncTaskToCalendar = useCallback((task: GanttItem) => {
+    if (!task.assignee) return;
+    const start = new Date(task.startDate);
+    const end = new Date(task.endDate);
+    const dayKeys: typeof weekdayKeys = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+    setCalendarData(prev => prev.map(p => {
+      const next = { ...p, monday: p.monday.filter(a => a.taskId !== task.id), tuesday: p.tuesday.filter(a => a.taskId !== task.id), wednesday: p.wednesday.filter(a => a.taskId !== task.id), thursday: p.thursday.filter(a => a.taskId !== task.id), friday: p.friday.filter(a => a.taskId !== task.id), saturday: p.saturday.filter(a => a.taskId !== task.id), sunday: p.sunday.filter(a => a.taskId !== task.id) };
+      if (p.assignee !== task.assignee) return next;
+      for (let d = new Date(start.getTime()); d <= end; d.setDate(d.getDate() + 1)) {
+        const dayIdx = d.getDay();
+        const key = dayKeys[dayIdx === 0 ? 6 : dayIdx - 1];
+        next[key] = [...next[key], { id: `${task.id}-${d.toISOString().slice(0,10)}`, name: task.project.replace(/工事|改修|改装/g, '').trim() || task.project, hours: 8, color: task.color, taskId: task.id }];
+      }
+      return next;
+    }));
+  }, []);
+
+  const removeTaskFromCalendar = useCallback((taskId: number) => {
+    setCalendarData(prev => prev.map(p => ({
+      ...p,
+      monday: p.monday.filter(a => a.taskId !== taskId),
+      tuesday: p.tuesday.filter(a => a.taskId !== taskId),
+      wednesday: p.wednesday.filter(a => a.taskId !== taskId),
+      thursday: p.thursday.filter(a => a.taskId !== taskId),
+      friday: p.friday.filter(a => a.taskId !== taskId),
+      saturday: p.saturday.filter(a => a.taskId !== taskId),
+      sunday: p.sunday.filter(a => a.taskId !== taskId),
+    })));
+  }, []);
+
+  /** US-0712: 同日に別割当があるか（競合） */
+  const checkAssignConflict = (assignee: string, startDate: string, endDate: string, excludeTaskId?: number): boolean => {
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    const person = calendarData.find(p => p.assignee === assignee);
+    if (!person) return false;
+    const dayKeys: typeof weekdayKeys = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      const dayIdx = d.getDay();
+      const key = dayKeys[dayIdx === 0 ? 6 : dayIdx - 1];
+      const hasOther = person[key].some(a => a.taskId !== excludeTaskId && a.taskId != null);
+      if (hasOther) return true;
+    }
+    return false;
+  };
+
+  /** 表示範囲: デフォルト4ヶ月（前月〜2ヶ月先）。ラベル用 */
+  const getViewMonths = () => {
     const startMonth = currentViewStart.month;
     const startYear = currentViewStart.year;
-    let endMonth = startMonth + 3;
+    let endMonth = startMonth + 3; // 4ヶ月表示
     let endYear = startYear;
     if (endMonth > 12) { endMonth -= 12; endYear += 1; }
     return { startMonth, endMonth, year: startYear, endYear };
   };
 
   const getQuarterLabel = () => {
-    const { startMonth, endMonth, endYear } = getQuarterMonths();
+    const { startMonth, endMonth, endYear } = getViewMonths();
     return `${currentViewStart.year}年${startMonth}月 - ${endYear}年${endMonth}月`;
   };
 
+  /** US-0701: 過去・未来はクォーター単位で移動 */
   const navigateQuarter = (direction: 'prev' | 'next') => {
     setCurrentViewStart(prev => {
       const monthsToAdd = direction === 'next' ? 3 : -3;
@@ -184,16 +248,20 @@ const Process: React.FC<ProcessProps> = () => {
     setNewProjectModalOpen(true);
   };
 
+  /** US-0702: タスク追加。名称/開始/終了/担当（任意）。終了<開始は保存不可。US-0712: 競合時は警告＋継続可。監査ログ。 */
   const createNewProject = () => {
-    if (!newProjectData.project.trim()) { toast.error('プロジェクト名を入力してください'); return; }
-    if (newProjectData.assignee.length === 0) { toast.error('担当者を選択してください'); return; }
+    if (!newProjectData.project.trim()) { toast.error('タスク名を入力してください'); return; }
     if (!newProjectData.startDate || !newProjectData.endDate) { toast.error('開始日と終了日を入力してください'); return; }
-    if (new Date(newProjectData.startDate) > new Date(newProjectData.endDate)) { toast.error('開始日は終了日より前に設定してください'); return; }
+    if (new Date(newProjectData.endDate) < new Date(newProjectData.startDate)) { toast.error('終了日は開始日以降にしてください。保存できません。'); return; }
+    const assigneeStr = newProjectData.assignee.length ? newProjectData.assignee[0] : '';
+    if (assigneeStr && checkAssignConflict(assigneeStr, newProjectData.startDate, newProjectData.endDate)) {
+      toast.warning('この担当者は同日に別の割当があります。競合の可能性があります。');
+    }
     const newProject: GanttItem = {
       id: Date.now(),
       project: newProjectData.project,
       location: newProjectData.location,
-      assignee: newProjectData.assignee.join(', '),
+      assignee: assigneeStr,
       startDate: newProjectData.startDate,
       endDate: newProjectData.endDate,
       progress: 0,
@@ -202,7 +270,19 @@ const Process: React.FC<ProcessProps> = () => {
     };
     setGanttData(prev => [...prev, newProject]);
     setNewProjectModalOpen(false);
-    toast.success('新規プロジェクトを追加しました');
+    if (assigneeStr) syncTaskToCalendar(newProject);
+    auditLog({ userId: '', action: '工程タスク作成', targetId: String(newProject.id), result: 'success' });
+    toast.success('タスクを追加しました');
+  };
+
+  /** US-0703: タスク削除。ガントから除外・カレンダーからも削除。監査ログ。（実績紐づきは暫定で削除可） */
+  const deleteTask = (id: number) => {
+    setGanttData(prev => prev.filter(item => item.id !== id));
+    removeTaskFromCalendar(id);
+    auditLog({ userId: '', action: '工程タスク削除', targetId: String(id), result: 'success' });
+    setProjectModalOpen(false);
+    setSelectedProjectId(null);
+    toast.success('タスクを削除しました');
   };
 
   const openAddProjectDialog = (personId: number, day: typeof weekdayKeys[number]) => {
@@ -242,9 +322,14 @@ const Process: React.FC<ProcessProps> = () => {
   };
 
   const updateProjectDates = useCallback((projectId: number, newStart: Date, newEnd: Date) => {
-    setGanttData(prev => prev.map(item => item.id === projectId ? { ...item, startDate: newStart.toISOString().split('T')[0], endDate: newEnd.toISOString().split('T')[0] } : item));
-    toast.success('プロジェクト期間を更新しました');
-  }, []);
+    const startStr = newStart.toISOString().split('T')[0];
+    const endStr = newEnd.toISOString().split('T')[0];
+    const current = ganttData.find(i => i.id === projectId);
+    if (current?.assignee) { removeTaskFromCalendar(projectId); syncTaskToCalendar({ ...current, startDate: startStr, endDate: endStr }); }
+    setGanttData(prev => prev.map(item => item.id === projectId ? { ...item, startDate: startStr, endDate: endStr } : item));
+    auditLog({ userId: '', action: '工程タスク更新', targetId: String(projectId), result: 'success' });
+    toast.success('期間を更新しました');
+  }, [ganttData, auditLog, removeTaskFromCalendar, syncTaskToCalendar]);
 
   const calculateDateFromPosition = useCallback((position: number, weeks: { start: Date; end: Date }[]) => {
     if (!weeks.length || !timelineRef.current) return new Date();
@@ -288,13 +373,13 @@ const Process: React.FC<ProcessProps> = () => {
   const handleMouseUp = useCallback((e: MouseEvent) => {
     if (dragTimeoutRef.current) { clearTimeout(dragTimeoutRef.current); dragTimeoutRef.current = null; }
     if (!isDragStarted && draggedProject) {
-      const full = ganttData.find(p => p.id === draggedProject.id);
-      if (full) { setSelectedProject({ ...full, totalDays: Math.ceil((new Date(full.endDate).getTime() - new Date(full.startDate).getTime()) / (1000 * 60 * 60 * 24)) }); setProjectModalOpen(true); }
+      setSelectedProjectId(draggedProject.id);
+      setProjectModalOpen(true);
     }
     if (isDragging && draggedProject && timelineRef.current) {
       const rect = timelineRef.current.getBoundingClientRect();
       const relativeX = e.clientX - rect.left;
-      const { startMonth, endMonth, year, endYear } = getQuarterMonths();
+      const { startMonth, endMonth, year, endYear } = getViewMonths();
       const weeks = generateWeeks(startMonth, endMonth, year, endYear);
       const newDate = calculateDateFromPosition(relativeX, weeks);
       const currentStart = new Date(draggedProject.startDate);
@@ -339,7 +424,7 @@ const Process: React.FC<ProcessProps> = () => {
 
   const filteredProjectTimelines = projectFilter === 'all' ? projectTimelines : projectTimelines.filter(p => p.id.toString() === projectFilter);
 
-  const filteredCalendarData = projectFilter === 'all' ? calendarData : calendarData.map(person => {
+  const filteredCalendarData = (projectFilter === 'all' ? calendarData : calendarData.map(person => {
     const names = ganttData.filter(p => p.id.toString() === projectFilter).map(p => p.project.split('工事')[0].split('改修')[0].split('改装')[0]);
     const filterDay = (arr: ProjectAssignment[]) => arr.filter(a => names.some(n => a.name.includes(n)));
     return {
@@ -347,7 +432,7 @@ const Process: React.FC<ProcessProps> = () => {
       monday: filterDay(person.monday), tuesday: filterDay(person.tuesday), wednesday: filterDay(person.wednesday),
       thursday: filterDay(person.thursday), friday: filterDay(person.friday), saturday: filterDay(person.saturday), sunday: filterDay(person.sunday)
     };
-  }).filter(person => weekdayKeys.some(day => person[day].length > 0));
+  })).filter(person => calendarPersonFilter === 'all' || person.assignee === calendarPersonFilter);
 
   const renderCalendarCard = (a: ProjectAssignment, personId: number, day: typeof weekdayKeys[number]) => {
     const isEditing = editingCell === `${personId}-${day}-${a.id}`;
@@ -393,21 +478,32 @@ const Process: React.FC<ProcessProps> = () => {
         <TabsContent value="calendar" className="space-y-6">
           <Card>
             <CardHeader>
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-4">
                 <div>
-                  <CardTitle>人員カレンダー（F-05）</CardTitle>
-                  <p className="text-muted-foreground">週単位での人員配置と工数管理</p>
+                  <CardTitle>人員カレンダー（F-05 / US-0711）</CardTitle>
+                  <p className="text-muted-foreground">人員×日付で稼働状況を表示。期間・人員・案件で絞り込み可能。</p>
                 </div>
-                <Select value={currentWeek} onValueChange={setCurrentWeek}>
-                  <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="前々週">前々週</SelectItem>
-                    <SelectItem value="前週">前週</SelectItem>
-                    <SelectItem value="今週">今週</SelectItem>
-                    <SelectItem value="来週">来週</SelectItem>
-                    <SelectItem value="再来週">再来週</SelectItem>
-                  </SelectContent>
-                </Select>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Label className="text-sm text-muted-foreground">期間</Label>
+                  <Select value={currentWeek} onValueChange={setCurrentWeek}>
+                    <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="前々週">前々週</SelectItem>
+                      <SelectItem value="前週">前週</SelectItem>
+                      <SelectItem value="今週">今週</SelectItem>
+                      <SelectItem value="来週">来週</SelectItem>
+                      <SelectItem value="再来週">再来週</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Label className="text-sm text-muted-foreground ml-2">人員</Label>
+                  <Select value={calendarPersonFilter} onValueChange={setCalendarPersonFilter}>
+                    <SelectTrigger className="w-36"><SelectValue placeholder="すべて" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">すべて</SelectItem>
+                      {assigneeList.map(a => <SelectItem key={a} value={a}>{a}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
             </CardHeader>
             <CardContent>
@@ -449,8 +545,8 @@ const Process: React.FC<ProcessProps> = () => {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
-                  <CardTitle>工程表（F-04）</CardTitle>
-                  <p className="text-muted-foreground mt-1">プロジェクトスケジュールと進捗管理</p>
+                  <CardTitle>工程ガント（F-04 / US-0701）</CardTitle>
+                  <p className="text-muted-foreground mt-1">タスクをガント形式で表示。名称・開始・終了・担当者（1名）</p>
                 </div>
                 <div className="flex items-center space-x-2">
                   <Button variant="outline" size="sm" onClick={() => navigateQuarter('prev')}><ChevronLeft className="w-4 h-4" /></Button>
@@ -460,39 +556,41 @@ const Process: React.FC<ProcessProps> = () => {
                 </div>
               </div>
             </CardHeader>
-            <CardContent className="flex h-[600px]">
-              <div className="w-48 flex-shrink-0 border-r border-border bg-surface">
-                <div className="sticky top-0 bg-surface z-20 border-b-2 border-border">
-                  <div className="py-3 border-b border-border/30 px-4"><span className="font-medium text-base">プロジェクト</span></div>
-                  <div className="h-[60px] border-b border-border/30" />
-                </div>
-                <div className="overflow-y-auto">
+            <CardContent className="p-0">
+              <div ref={scrollContainerRef} className="max-h-[75vh] overflow-auto flex min-h-[580px]">
+                <div className="w-48 flex-shrink-0 border-r border-border bg-surface">
+                  <div className="sticky top-0 z-10 bg-surface border-b-2 border-border">
+                    <div className="py-3 border-b border-border/30 px-4"><span className="font-medium text-base">タスク</span></div>
+                    <div className="h-[60px] border-b border-border/30" />
+                  </div>
+                  <div>
                   {filteredProjectTimelines.map((project) => (
-                    <div key={project.id} className="p-4 border-b border-border/30 bg-card">
-                      <div className="space-y-2">
-                        <div className="flex items-center space-x-2">
-                          <div className="w-3 h-3 rounded-full" style={{ backgroundColor: project.color }} />
+                    <div key={project.id} className="p-3 border-b border-border/30 bg-card cursor-pointer hover:bg-muted/50" onClick={() => { setSelectedProjectId(project.id); setProjectModalOpen(true); }}>
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: project.color }} />
                           <h3 className="font-medium text-sm truncate">{project.project}</h3>
                         </div>
+                        <p className="text-xs text-muted-foreground">開始: {project.startDate}</p>
+                        <p className="text-xs text-muted-foreground">終了: {project.endDate}</p>
+                        <p className="text-xs text-muted-foreground">担当: {project.assignee || '未割当'}</p>
                         {editingLocation === project.id ? (
-                          <Input value={editingLocationValue} onChange={(e) => setEditingLocationValue(e.target.value)} onBlur={() => { updateGanttItem(project.id, 'location', editingLocationValue); setEditingLocation(null); }} onKeyDown={(e) => { if (e.key === 'Enter') { updateGanttItem(project.id, 'location', editingLocationValue); setEditingLocation(null); } else if (e.key === 'Escape') setEditingLocation(null); }} autoFocus className="h-6 text-xs" placeholder="場所を入力" />
+                          <Input value={editingLocationValue} onChange={(e) => setEditingLocationValue(e.target.value)} onBlur={() => { updateGanttItem(project.id, 'location', editingLocationValue); setEditingLocation(null); }} onKeyDown={(e) => { if (e.key === 'Enter') { updateGanttItem(project.id, 'location', editingLocationValue); setEditingLocation(null); } else if (e.key === 'Escape') setEditingLocation(null); }} autoFocus className="h-6 text-xs" placeholder="場所" />
                         ) : (
-                          <p className="text-xs text-muted-foreground flex items-center cursor-pointer hover:bg-muted/50 rounded px-1 -mx-1 py-0.5" onClick={() => { setEditingLocation(project.id); setEditingLocationValue(project.location || ''); }} title="クリックして編集">
-                            <Building2 className="w-3 h-3 mr-1" />{project.location || '場所を追加...'}
+                          <p className="text-xs text-muted-foreground flex items-center cursor-pointer hover:bg-muted/50 rounded px-1 -mx-1 py-0.5" onClick={() => { setEditingLocation(project.id); setEditingLocationValue(project.location || ''); }} title="場所を編集">
+                            <Building2 className="w-3 h-3 mr-1" />{project.location || '場所...'}
                           </p>
                         )}
-                        <p className="text-xs text-muted-foreground">{project.assignee}</p>
-                        {getStatusBadge(project.status)}
                       </div>
                     </div>
                   ))}
+                  </div>
                 </div>
-              </div>
 
-              <div className="flex-1 overflow-x-auto">
+                <div className="flex-1 min-w-0 overflow-x-auto">
                 <div className="min-w-max">
                   {(() => {
-                    const { startMonth, endMonth, year, endYear } = getQuarterMonths();
+                    const { startMonth, endMonth, year, endYear } = getViewMonths();
                     const weeks = generateWeeks(startMonth, endMonth, year, endYear);
                     if (!weeks.length) return <div className="p-4 text-muted-foreground">表示する期間がありません</div>;
                     const timelineStart = weeks[0].start;
@@ -567,6 +665,7 @@ const Process: React.FC<ProcessProps> = () => {
                     );
                   })()}
                 </div>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -589,10 +688,13 @@ const Process: React.FC<ProcessProps> = () => {
               <Input value={newProjectData.location} onChange={(e) => setNewProjectData(prev => ({ ...prev, location: e.target.value }))} placeholder="例：東京都品川区〇〇1-2-3" className="w-full" />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">担当者 *</label>
-              <Select value={newProjectData.assignee[0] || ''} onValueChange={(v) => setNewProjectData(prev => ({ ...prev, assignee: [v] }))}>
-                <SelectTrigger className="w-full"><SelectValue placeholder="担当者を選択" /></SelectTrigger>
-                <SelectContent>{assigneeList.map(a => <SelectItem key={a} value={a}>{a}</SelectItem>)}</SelectContent>
+              <label className="text-sm font-medium">担当者（任意・1名）</label>
+              <Select value={newProjectData.assignee[0] || '_none_'} onValueChange={(v) => setNewProjectData(prev => ({ ...prev, assignee: v === '_none_' ? [] : [v] }))}>
+                <SelectTrigger className="w-full"><SelectValue placeholder="未割当" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="_none_">未割当</SelectItem>
+                  {assigneeList.map(a => <SelectItem key={a} value={a}>{a}</SelectItem>)}
+                </SelectContent>
               </Select>
             </div>
             <div className="grid grid-cols-2 gap-4">
@@ -624,27 +726,78 @@ const Process: React.FC<ProcessProps> = () => {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={projectModalOpen} onOpenChange={setProjectModalOpen}>
+      <Dialog open={projectModalOpen} onOpenChange={(open) => { if (!open) setSelectedProjectId(null); setProjectModalOpen(open); }}>
         <DialogContent className="max-w-2xl">
-          <DialogHeader><DialogTitle>プロジェクト詳細</DialogTitle></DialogHeader>
+          <DialogHeader>
+            <DialogTitle>タスク詳細（US-0702）</DialogTitle>
+            <DialogDescription>名称・開始・終了・担当を編集できます。終了が開始より前の場合は保存できません。</DialogDescription>
+          </DialogHeader>
           {selectedProject && (
             <div className="space-y-4">
-              <div className="flex items-center space-x-4">
-                <div className="w-4 h-4 rounded" style={{ backgroundColor: selectedProject.color }} />
-                <div>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <div className="w-4 h-4 rounded" style={{ backgroundColor: selectedProject.color }} />
                   <h3 className="text-lg font-medium">{selectedProject.project}</h3>
-                  <div className="mt-2">
-                    <label className="text-sm font-medium text-muted-foreground flex items-center mb-1"><Building2 className="w-4 h-4 mr-1" />場所</label>
-                    <Input value={selectedProject.location || ''} onChange={(e) => updateGanttItem(selectedProject.id, 'location', e.target.value)} placeholder="現場の場所を入力" className="max-w-md" />
-                  </div>
-                  <p className="text-sm text-muted-foreground mt-2">担当者: {selectedProject.assignee}</p>
                 </div>
+                <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => { if (confirm('このタスクを削除しますか？')) deleteTask(selectedProject.id); }}><Trash2 className="w-4 h-4 mr-1" />削除</Button>
+              </div>
+              <div>
+                <Label className="text-sm">タスク名</Label>
+                <Input value={selectedProject.project} onChange={(e) => updateGanttItem(selectedProject.id, 'project', e.target.value)} placeholder="名称" className="mt-1" />
+              </div>
+              <div>
+                <Label className="text-sm flex items-center"><Building2 className="w-4 h-4 mr-1" />場所</Label>
+                <Input value={selectedProject.location || ''} onChange={(e) => updateGanttItem(selectedProject.id, 'location', e.target.value)} placeholder="現場の場所" className="mt-1" />
               </div>
               <div className="grid grid-cols-2 gap-4">
-                <div><label className="text-sm font-medium text-muted-foreground">開始日</label><p>{selectedProject.startDate}</p></div>
-                <div><label className="text-sm font-medium text-muted-foreground">終了日</label><p>{selectedProject.endDate}</p></div>
-                <div><label className="text-sm font-medium text-muted-foreground">期間</label><p>{selectedProject.totalDays}日</p></div>
+                <div>
+                  <Label className="text-sm">開始日</Label>
+                  <Input
+                    type="date"
+                    value={selectedProject.startDate}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      updateGanttItem(selectedProject.id, 'startDate', v);
+                      if (selectedProject.assignee) { removeTaskFromCalendar(selectedProject.id); syncTaskToCalendar({ ...selectedProject, startDate: v }); }
+                    }}
+                    className="mt-1"
+                  />
+                </div>
+                <div>
+                  <Label className="text-sm">終了日</Label>
+                  <Input
+                    type="date"
+                    value={selectedProject.endDate}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      updateGanttItem(selectedProject.id, 'endDate', v);
+                      if (selectedProject.assignee) { removeTaskFromCalendar(selectedProject.id); syncTaskToCalendar({ ...selectedProject, endDate: v }); }
+                    }}
+                    className="mt-1"
+                  />
+                </div>
               </div>
+              <div>
+                <Label className="text-sm">担当者（1名）</Label>
+                <Select
+                  value={selectedProject.assignee || '_none_'}
+                  onValueChange={(v) => {
+                    const assignee = v === '_none_' ? '' : v;
+                    if (assignee && checkAssignConflict(assignee, selectedProject.startDate, selectedProject.endDate, selectedProject.id)) toast.warning('この担当者は同日に別の割当があります。');
+                    removeTaskFromCalendar(selectedProject.id);
+                    updateGanttItem(selectedProject.id, 'assignee', assignee);
+                    if (assignee) syncTaskToCalendar({ ...selectedProject, assignee });
+                    auditLog({ userId: '', action: '人員割当変更', targetId: String(selectedProject.id), result: 'success' });
+                  }}
+                >
+                  <SelectTrigger className="mt-1"><SelectValue placeholder="担当を選択" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="_none_">未割当</SelectItem>
+                    {assigneeList.map(a => <SelectItem key={a} value={a}>{a}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <p className="text-xs text-muted-foreground">終了日が開始日より前の場合は保存できません。変更は自動保存されます。</p>
             </div>
           )}
         </DialogContent>

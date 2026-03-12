@@ -76,9 +76,9 @@ const initialQuoteProjects = [
 ];
 
 const initialCustomers: CustomerRecord[] = [
-  { id: 'CUST-001', companyName: 'A邸プロジェクト', contactPerson: '担当者A', email: 'a@example.com', phone: '03-0000-0001', createdAt: '2024-01-01', type: 'customer', isActive: true },
-  { id: 'SUPP-001', companyName: '建材商会', contactPerson: '担当者B', email: 'b@example.com', phone: '03-0000-0002', createdAt: '2024-01-01', type: 'supplier', isActive: true, rating: 4, reliability: 90, leadTime: '3営業日' },
-  { id: 'SUPP-002', companyName: '東都建材', contactPerson: '担当者C', email: 'c@example.com', phone: '03-0000-0003', createdAt: '2024-01-01', type: 'supplier', isActive: true, rating: 5, reliability: 95, leadTime: '2営業日' },
+  { id: 'CUST-001', companyName: 'A邸プロジェクト', contactPerson: '担当者A', email: 'a@example.com', phone: '03-0000-0001', createdAt: '2024-01-01', type: 'customer', isActive: true, billingDay: 20 },
+  { id: 'SUPP-001', companyName: '建材商会', contactPerson: '担当者B', email: 'b@example.com', phone: '03-0000-0002', createdAt: '2024-01-01', type: 'supplier', isActive: true },
+  { id: 'SUPP-002', companyName: '東都建材', contactPerson: '担当者C', email: 'c@example.com', phone: '03-0000-0003', createdAt: '2024-01-01', type: 'supplier', isActive: true },
 ];
 
 const initialPurchaseOrders: PurchaseOrderRecord[] = [
@@ -95,28 +95,11 @@ const initialPurchaseOrders: PurchaseOrderRecord[] = [
     expectedDeliveryDate: '2024-01-17',
     status: 'ordered',
     totalAmount: 153500,
+    orderMethod: 'email',
+    emailSentAt: '2024-01-10T10:00:00Z',
     materials: [
       { id: '1-1', materialName: '石膏ボード 12.5mm', quantity: 50, unit: '枚', unitPrice: 850, totalPrice: 42500, isFromQuote: true },
       { id: '1-2', materialName: 'LGS @455', quantity: 30, unit: 'm', unitPrice: 1200, totalPrice: 36000, isFromQuote: true },
-    ],
-    memo: '2種類の材料を発注',
-  },
-  {
-    id: 'PO-202401-0002',
-    projectId: '1',
-    projectName: '内装工事（品川）',
-    customerName: 'A邸プロジェクト',
-    supplierId: 'SUPP-002',
-    supplierName: '東都建材',
-    supplierPhone: '03-0000-0003',
-    supplierEmail: 'c@example.com',
-    orderDate: '2024-01-12',
-    expectedDeliveryDate: '2024-01-19',
-    status: 'ordered',
-    totalAmount: 75000,
-    materials: [
-      { id: '1-3', materialName: '下地処理', quantity: 25, unit: 'm2', unitPrice: 1200, totalPrice: 30000, isFromQuote: true },
-      { id: '1-4', materialName: '石膏ボード張り', quantity: 25, unit: 'm2', unitPrice: 1800, totalPrice: 45000, isFromQuote: true },
     ],
     memo: '2種類の材料を発注',
   },
@@ -125,19 +108,15 @@ const initialPurchaseOrders: PurchaseOrderRecord[] = [
     projectId: '2',
     projectName: 'オフィス改装工事（新宿）',
     customerName: 'Bビル改修',
-    supplierId: 'SUPP-001',
-    supplierName: '建材商会',
-    supplierPhone: '03-0000-0002',
-    supplierEmail: 'b@example.com',
     orderDate: '2024-01-15',
     expectedDeliveryDate: '2024-01-22',
     status: 'not_ordered',
-    totalAmount: 320000,
+    totalAmount: 0,
     materials: [
       { id: '2-1', materialName: 'システム天井', quantity: 80, unit: 'm2', unitPrice: 2500, totalPrice: 200000, isFromQuote: false },
       { id: '2-2', materialName: 'カーペット', quantity: 120, unit: 'm2', unitPrice: 1000, totalPrice: 120000, isFromQuote: false },
     ],
-    memo: '未発注・見積確認済み',
+    memo: '未発注・仕入先未定',
   },
 ];
 
@@ -152,27 +131,97 @@ export type MaterialRecord = {
   isActive?: boolean;
 };
 
+/** 見積明細（US-0601: 単価元でマスタ/AIを区別） */
+export type EstimateLineItem = {
+  id: string;
+  item: string;
+  quantity: number;
+  unit: string;
+  unitPrice: number;
+  amount: number;
+  unitPriceSource: 'master' | 'ai';
+};
+
+/** 見積（F-03: 下書き/確定/取消・見積番号・顧客・案件・改版元） */
+export type EstimateRecord = {
+  id: string;
+  estimateNumber: string;
+  customerId: string;
+  customerName: string;
+  projectName: string;
+  status: 'draft' | 'confirmed' | 'cancelled';
+  items: EstimateLineItem[];
+  subtotal: number;
+  taxAmount: number;
+  total: number;
+  sourceEstimateId?: string;
+  cancelReason?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** 材料発注ひな型 1行（US-0901: 品目/数量/単位/備考） */
+export type OrderTemplateItem = {
+  id: string;
+  item: string;
+  quantity: number;
+  unit: string;
+  memo?: string;
+};
+
+/** 材料発注ひな型（F-06） */
+export type OrderTemplateRecord = {
+  id: string;
+  name: string;
+  items: OrderTemplateItem[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 const initialMaterials: MaterialRecord[] = [
   { id: 'M1', name: '石膏ボード 12.5mm', unit: '枚', category: '建材', standardPrice: 850, code: 'GP-12.5', isActive: true },
   { id: 'M2', name: 'LGS @455', unit: 'm', category: '建材', standardPrice: 1200, code: 'LGS-455', isActive: true },
 ];
 
+/** 請求明細行（F-12） */
+export type InvoiceLineItem = {
+  id: string;
+  item: string;
+  quantity: number;
+  unit: string;
+  unitPrice: number;
+  amount: number;
+};
+
+/** 請求（F-12）US-1011: 請求番号は内部管理用・支払い期限は設けない */
 export type InvoiceRecord = {
   id: string;
   invoiceNumber: string;
+  customerId: string;
   customerName: string;
   projectName: string;
   status: 'draft' | 'issued' | 'cancelled';
+  /** 請求日（顧客の請求日を初期値。例: 20日締め→20、月末→99） */
+  billingDayDisplay?: number;
+  /** 担当者（自由入力） */
+  contactPerson?: string;
+  items: InvoiceLineItem[];
+  subtotal: number;
+  taxAmount: number;
   totalAmount: number;
   lastUpdated: string;
   dueDate?: string;
+  updateHistory?: Array<{ at: string; action: string }>;
 };
 
 const initialInvoices: InvoiceRecord[] = [
-  { id: 'inv1', invoiceNumber: 'INV-202603-0001', customerName: 'A邸プロジェクト', projectName: '内装工事（品川）', status: 'issued', totalAmount: 168850, lastUpdated: '2026-03-01', dueDate: '2026-03-31' },
-  { id: 'inv2', invoiceNumber: 'INV-202603-0002', customerName: 'Bビル改修', projectName: 'オフィス改装工事（新宿）', status: 'issued', totalAmount: 935000, lastUpdated: '2026-03-05', dueDate: '2026-04-05' },
-  { id: 'inv3', invoiceNumber: 'INV-202603-0003', customerName: 'A邸プロジェクト', projectName: '追加工事（品川）', status: 'draft', totalAmount: 55000, lastUpdated: '2026-03-10', dueDate: '2026-04-10' },
+  { id: 'inv1', invoiceNumber: 'INV-202603-0001', customerId: 'CUST-001', customerName: 'A邸プロジェクト', projectName: '内装工事（品川）', status: 'issued', billingDayDisplay: 20, items: [{ id: '1', item: '工事請負', quantity: 1, unit: '式', unitPrice: 153500, amount: 153500 }], subtotal: 153500, taxAmount: 15350, totalAmount: 168850, lastUpdated: '2026-03-01' },
+  { id: 'inv2', invoiceNumber: 'INV-202603-0002', customerId: '', customerName: 'Bビル改修', projectName: 'オフィス改装工事（新宿）', status: 'issued', items: [{ id: '1', item: '工事請負', quantity: 1, unit: '式', unitPrice: 850000, amount: 850000 }], subtotal: 850000, taxAmount: 85000, totalAmount: 935000, lastUpdated: '2026-03-05' },
+  { id: 'inv3', invoiceNumber: 'INV-202603-0003', customerId: 'CUST-001', customerName: 'A邸プロジェクト', projectName: '追加工事（品川）', status: 'draft', items: [{ id: '1', item: '追加工事', quantity: 1, unit: '式', unitPrice: 50000, amount: 50000 }], subtotal: 50000, taxAmount: 5000, totalAmount: 55000, lastUpdated: '2026-03-10' },
 ];
+
+const initialEstimates: EstimateRecord[] = [];
+const initialOrderTemplates: OrderTemplateRecord[] = [];
 
 // ログイン用ユーザー（US-0001: 有効な認証情報でログイン可能。設定の従業員管理と連携する場合は state で同期可）
 const initialLoginUsers = [
@@ -188,6 +237,11 @@ export default function App() {
   const [materials, setMaterials] = useState<MaterialRecord[]>(initialMaterials);
   const [invoices, setInvoices] = useState<InvoiceRecord[]>(initialInvoices);
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrderRecord[]>(initialPurchaseOrders);
+  const [estimates, setEstimates] = useState<EstimateRecord[]>(initialEstimates);
+  const [orderTemplates, setOrderTemplates] = useState<OrderTemplateRecord[]>(initialOrderTemplates);
+  const [selectedPurchaseOrderId, setSelectedPurchaseOrderId] = useState<string | null>(null);
+  const [openEstimateId, setOpenEstimateId] = useState<string | null>(null);
+  const [openInvoiceId, setOpenInvoiceId] = useState<string | null>(null);
   const [loginUsers] = useState(initialLoginUsers);
 
   const visibleNavItems = useMemo(() => {
@@ -215,6 +269,10 @@ export default function App() {
             customers={customers}
             setCustomers={setCustomers}
             materials={materials}
+            estimates={estimates}
+            setEstimates={setEstimates}
+            openEstimateId={openEstimateId}
+            setOpenEstimateId={setOpenEstimateId}
           />
         );
       case 'process':
@@ -227,7 +285,12 @@ export default function App() {
             purchaseOrders={purchaseOrders}
             setPurchaseOrders={setPurchaseOrders}
             customers={customers}
+            estimates={estimates}
+            orderTemplates={orderTemplates}
+            setOrderTemplates={setOrderTemplates}
             onNavigateToQuote={() => setCurrentPage('quote')}
+            selectedPurchaseOrderId={selectedPurchaseOrderId}
+            setSelectedPurchaseOrderId={setSelectedPurchaseOrderId}
           />
         );
       case 'invoice':
@@ -237,6 +300,9 @@ export default function App() {
             setInvoices={setInvoices}
             quoteProjects={quoteProjects}
             customers={customers}
+            estimates={estimates}
+            openInvoiceId={openInvoiceId}
+            setOpenInvoiceId={setOpenInvoiceId}
           />
         );
       case 'customer':
@@ -246,6 +312,10 @@ export default function App() {
             setCustomers={setCustomers}
             materials={materials}
             purchaseOrders={purchaseOrders}
+            onNavigateToPurchaseWithOrder={(orderId) => {
+              setSelectedPurchaseOrderId(orderId);
+              setCurrentPage('purchase');
+            }}
           />
         );
       case 'attendance':
@@ -253,7 +323,18 @@ export default function App() {
       case 'system-settings':
         return isField ? <Forbidden403 onGoBack={() => setCurrentPage('dashboard')} /> : <SystemSettings materials={materials} setMaterials={setMaterials} />;
       case 'projects':
-        return <Projects customers={customers} setCustomers={setCustomers} />;
+        return (
+          <Projects
+            customers={customers}
+            setCustomers={setCustomers}
+            estimates={estimates}
+            invoices={invoices}
+            purchaseOrders={purchaseOrders}
+            onOpenEstimate={(id) => { setOpenEstimateId(id); setCurrentPage('quote'); }}
+            onOpenInvoice={(id) => { setOpenInvoiceId(id); setCurrentPage('invoice'); }}
+            onOpenPurchaseOrder={(id) => { setSelectedPurchaseOrderId(id); setCurrentPage('purchase'); }}
+          />
+        );
       default:
         return (
           <div className="p-6 max-w-screen-xl mx-auto space-y-6">

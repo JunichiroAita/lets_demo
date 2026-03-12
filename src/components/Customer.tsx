@@ -11,7 +11,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Plus, Edit, Search, Users, Truck, Filter, Archive, ArchiveRestore, Eye } from 'lucide-react';
 import { toast } from 'sonner';
 import SupplierDetail from './SupplierDetail';
+import { useAudit } from '../contexts/AuditContext';
+import { useAuth } from '../contexts/AuthContext';
 
+/** 顧客・仕入先（F-21）US-1001: 種別・名称・住所(任意)・担当者(任意)。顧客のみ請求日。仕入先はリードタイム・評価・信頼度は管理対象外。 */
 export interface CustomerRecord {
   id: string;
   companyName: string;
@@ -22,6 +25,8 @@ export interface CustomerRecord {
   memo?: string;
   createdAt: string;
   type: 'customer' | 'supplier';
+  /** 顧客のみ。請求日（数字）。月末は99を入力 */
+  billingDay?: number;
   rating?: number;
   reliability?: number;
   leadTime?: string;
@@ -61,12 +66,17 @@ interface CustomerProps {
   setCustomers: React.Dispatch<React.SetStateAction<CustomerRecord[]>>;
   materials: Material[];
   purchaseOrders: PurchaseOrder[];
+  onNavigateToPurchaseWithOrder?: (orderId: string) => void;
 }
 
 type CustomerSortKey = 'createdAt' | 'companyName' | 'contactPerson';
 type CustomerSortDir = 'asc' | 'desc';
 
-const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials, purchaseOrders }) => {
+const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials, purchaseOrders, onNavigateToPurchaseWithOrder }) => {
+  const { log: auditLog } = useAudit();
+  const { session } = useAuth();
+  const userId = session?.user?.id ?? '';
+
   const [searchTerm, setSearchTerm] = useState('');
   const [typeFilter, setTypeFilter] = useState<'all' | 'customer' | 'supplier'>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
@@ -85,10 +95,8 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
     address: '',
     memo: '',
     type: 'customer' as 'customer' | 'supplier',
-    rating: 0,
-    reliability: 0,
-    leadTime: '',
-    supplierMaterials: [] as CustomerRecord['supplierMaterials']
+    billingDay: undefined as number | undefined,
+    supplierMaterials: [] as CustomerRecord['supplierMaterials'],
   });
 
   const filteredAndSortedCustomers = useMemo(() => {
@@ -105,6 +113,7 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
         (customer.phone?.toLowerCase() || '').includes(term) ||
         (customer.address?.toLowerCase() || '').includes(term) ||
         (customer.memo?.toLowerCase() || '').includes(term);
+      // US-1003: キーワードは名称・担当者・連絡先で絞込（上記で対応）
       return matchesType && matchesStatus && matchesSearch;
     });
     list = [...list].sort((a, b) => {
@@ -130,10 +139,8 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
       address: '',
       memo: '',
       type: 'customer',
-      rating: 0,
-      reliability: 0,
-      leadTime: '',
-      supplierMaterials: []
+      billingDay: undefined,
+      supplierMaterials: [],
     });
     setIsModalOpen(true);
   };
@@ -148,10 +155,8 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
       address: customer.address || '',
       memo: customer.memo || '',
       type: customer.type,
-      rating: customer.rating || 0,
-      reliability: customer.reliability || 0,
-      leadTime: customer.leadTime || '',
-      supplierMaterials: customer.supplierMaterials || []
+      billingDay: customer.billingDay,
+      supplierMaterials: customer.supplierMaterials || [],
     });
     setIsModalOpen(true);
   };
@@ -166,8 +171,7 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
       setCustomers(prev => prev.map(c =>
         c.id === editingCustomer.id
           ? {
-              ...editingCustomer,
-              ...formData,
+              ...c,
               companyName: formData.companyName,
               contactPerson: formData.contactPerson || '',
               email: formData.email || '',
@@ -175,13 +179,12 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
               address: formData.address,
               memo: formData.memo,
               type: formData.type,
-              rating: formData.type === 'supplier' ? formData.rating : undefined,
-              reliability: formData.type === 'supplier' ? formData.reliability : undefined,
-              leadTime: formData.type === 'supplier' ? formData.leadTime : undefined,
-              supplierMaterials: formData.type === 'supplier' ? formData.supplierMaterials : undefined
+              billingDay: formData.type === 'customer' ? formData.billingDay : undefined,
+              supplierMaterials: formData.type === 'supplier' ? formData.supplierMaterials : undefined,
             }
           : c
       ));
+      auditLog({ userId, action: '顧客・仕入先編集', targetId: editingCustomer.id, result: 'success' });
       toast.success(`${formData.type === 'customer' ? '顧客' : '仕入先'}を更新しました`);
     } else {
       const newId = `${formData.type === 'customer' ? 'CUST' : 'SUPP'}-${String(customers.filter(c => c.type === formData.type).length + 1).padStart(3, '0')}`;
@@ -194,14 +197,13 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
         address: formData.address,
         memo: formData.memo,
         type: formData.type,
-        rating: formData.type === 'supplier' ? formData.rating : undefined,
-        reliability: formData.type === 'supplier' ? formData.reliability : undefined,
-        leadTime: formData.type === 'supplier' ? formData.leadTime : undefined,
+        billingDay: formData.type === 'customer' ? formData.billingDay : undefined,
         supplierMaterials: formData.type === 'supplier' ? formData.supplierMaterials : undefined,
         createdAt: new Date().toISOString().split('T')[0],
-        isActive: true
+        isActive: true,
       };
       setCustomers(prev => [...prev, newCustomer]);
+      auditLog({ userId, action: '顧客・仕入先登録', targetId: newId, result: 'success' });
       toast.success(`${formData.type === 'customer' ? '顧客' : '仕入先'}を追加しました`);
     }
     setIsModalOpen(false);
@@ -223,6 +225,7 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
       setCustomers(prev => prev.map(c =>
         c.id === customer.id ? { ...c, isActive: newActiveState } : c
       ));
+      auditLog({ userId, action: newActiveState ? '顧客・仕入先有効化' : '顧客・仕入先無効化', targetId: customer.id, result: 'success' });
       toast.success(`${customer.type === 'customer' ? '顧客' : '仕入先'}を${actionText}しました`);
     }
   };
@@ -233,8 +236,8 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
         <div className="p-6 max-w-screen-2xl mx-auto space-y-6">
           <div className="flex items-start justify-between">
             <div className="space-y-1">
-              <h1>顧客・仕入先管理</h1>
-              <p className="text-muted-foreground">顧客と仕入先の情報を一元管理</p>
+              <h1 className="text-2xl font-semibold tracking-tight">顧客・仕入先（F-21）</h1>
+              <p className="text-muted-foreground">顧客と仕入先の登録・編集・検索。仕入先は購買で選択できます。</p>
             </div>
           </div>
 
@@ -245,7 +248,7 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
                   <div className="relative flex-1 max-w-md">
                     <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                     <Input
-                      placeholder="名称・担当者・メール・電話・住所・メモで検索..."
+                      placeholder="名称・担当者・連絡先で検索..."
                       value={searchTerm}
                       onChange={(e) => setSearchTerm(e.target.value)}
                       className="pl-10"
@@ -387,12 +390,12 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
             <DialogContent className="max-w-2xl">
               <DialogHeader>
                 <DialogTitle>{editingCustomer ? `${formData.type === 'customer' ? '顧客' : '仕入先'}を編集` : '新規登録'}</DialogTitle>
-                <DialogDescription>必須項目（*）を入力してください</DialogDescription>
+                <DialogDescription>種別・名称（必須）・住所・担当者は任意。顧客は請求日を登録できます。</DialogDescription>
               </DialogHeader>
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div className="col-span-2">
-                    <Label htmlFor="type">種別 *</Label>
+                    <Label>種別 *</Label>
                     <Select value={formData.type} onValueChange={(v: string) => setFormData({ ...formData, type: v as 'customer' | 'supplier' })}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
@@ -406,39 +409,38 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
                     <Input id="companyName" value={formData.companyName} onChange={(e) => setFormData({ ...formData, companyName: e.target.value })} placeholder="例：株式会社〇〇" />
                   </div>
                   <div>
-                    <Label htmlFor="contactPerson">担当者</Label>
+                    <Label htmlFor="contactPerson">担当者（任意）</Label>
                     <Input id="contactPerson" value={formData.contactPerson} onChange={(e) => setFormData({ ...formData, contactPerson: e.target.value })} placeholder="例：山田太郎" />
+                  </div>
+                  <div>
+                    <Label htmlFor="address">住所（任意）</Label>
+                    <Input id="address" value={formData.address} onChange={(e) => setFormData({ ...formData, address: e.target.value })} placeholder="例：東京都〇〇区△△1-2-3" />
                   </div>
                   <div>
                     <Label htmlFor="phone">電話番号</Label>
                     <Input id="phone" value={formData.phone} onChange={(e) => setFormData({ ...formData, phone: e.target.value })} placeholder="例：03-1234-5678" />
                   </div>
-                  <div className="col-span-2">
+                  <div>
                     <Label htmlFor="email">メールアドレス</Label>
                     <Input id="email" type="email" value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })} placeholder="例：example@company.com" />
                   </div>
-                  <div className="col-span-2">
-                    <Label htmlFor="address">住所</Label>
-                    <Input id="address" value={formData.address} onChange={(e) => setFormData({ ...formData, address: e.target.value })} placeholder="例：東京都〇〇区△△1-2-3" />
-                  </div>
-                  {formData.type === 'supplier' && (
-                    <>
-                      <div>
-                        <Label htmlFor="leadTime">リードタイム</Label>
-                        <Input id="leadTime" value={formData.leadTime} onChange={(e) => setFormData({ ...formData, leadTime: e.target.value })} placeholder="例：3営業日" />
-                      </div>
-                      <div>
-                        <Label htmlFor="rating">評価（1-5）</Label>
-                        <Input id="rating" type="number" min="0" max="5" step="0.1" value={formData.rating} onChange={(e) => setFormData({ ...formData, rating: parseFloat(e.target.value) || 0 })} />
-                      </div>
-                      <div className="col-span-2">
-                        <Label htmlFor="reliability">信頼度（%）</Label>
-                        <Input id="reliability" type="number" min="0" max="100" value={formData.reliability} onChange={(e) => setFormData({ ...formData, reliability: parseInt(e.target.value) || 0 })} />
-                      </div>
-                    </>
+                  {formData.type === 'customer' && (
+                    <div className="col-span-2">
+                      <Label htmlFor="billingDay">請求日（任意・数字）</Label>
+                      <Input
+                        id="billingDay"
+                        type="number"
+                        min={1}
+                        max={99}
+                        value={formData.billingDay ?? ''}
+                        onChange={(e) => setFormData({ ...formData, billingDay: e.target.value ? parseInt(e.target.value, 10) : undefined })}
+                        placeholder="例：20"
+                      />
+                      <p className="text-xs text-muted-foreground mt-1">※月末締めの場合は99を入力</p>
+                    </div>
                   )}
                   <div className="col-span-2">
-                    <Label htmlFor="memo">メモ</Label>
+                    <Label htmlFor="memo">備考</Label>
                     <Textarea id="memo" value={formData.memo} onChange={(e) => setFormData({ ...formData, memo: e.target.value })} placeholder="特記事項など" rows={3} />
                   </div>
                 </div>
@@ -456,7 +458,9 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
             supplier={selectedSupplier}
             materials={materials}
             purchaseOrders={purchaseOrders}
+            setCustomers={setCustomers}
             onBack={() => setViewMode('list')}
+            onOrderClick={onNavigateToPurchaseWithOrder}
           />
         )
       )}
