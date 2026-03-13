@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Home,
   Briefcase,
@@ -26,6 +26,7 @@ import Customer from './components/Customer';
 import type { CustomerRecord } from './components/Customer';
 import Attendance from './components/Attendance';
 import SystemSettings from './components/SystemSettings';
+import type { EmployeeRecord } from './components/SystemSettings';
 import Projects from './components/Projects';
 import Login from './components/Login';
 import Forbidden403 from './components/Forbidden403';
@@ -131,7 +132,7 @@ export type MaterialRecord = {
   isActive?: boolean;
 };
 
-/** 見積明細（US-0601: 単価元でマスタ/AIを区別） */
+/** 見積明細（単価元でマスタ/AIを区別） */
 export type EstimateLineItem = {
   id: string;
   item: string;
@@ -142,7 +143,7 @@ export type EstimateLineItem = {
   unitPriceSource: 'master' | 'ai';
 };
 
-/** 見積（F-03: 下書き/確定/取消・見積番号・顧客・案件・改版元） */
+/** 見積（下書き/確定/取消・見積番号・顧客・案件・改版元） */
 export type EstimateRecord = {
   id: string;
   estimateNumber: string;
@@ -160,7 +161,7 @@ export type EstimateRecord = {
   updatedAt: string;
 };
 
-/** 材料発注ひな型 1行（US-0901: 品目/数量/単位/備考） */
+/** 材料発注ひな型 1行（品目/数量/単位/備考） */
 export type OrderTemplateItem = {
   id: string;
   item: string;
@@ -169,7 +170,7 @@ export type OrderTemplateItem = {
   memo?: string;
 };
 
-/** 材料発注ひな型（F-06） */
+/** 材料発注ひな型 */
 export type OrderTemplateRecord = {
   id: string;
   name: string;
@@ -183,7 +184,7 @@ const initialMaterials: MaterialRecord[] = [
   { id: 'M2', name: 'LGS @455', unit: 'm', category: '建材', standardPrice: 1200, code: 'LGS-455', isActive: true },
 ];
 
-/** 請求明細行（F-12） */
+/** 請求明細行 */
 export type InvoiceLineItem = {
   id: string;
   item: string;
@@ -193,7 +194,7 @@ export type InvoiceLineItem = {
   amount: number;
 };
 
-/** 請求（F-12）US-1011: 請求番号は内部管理用・支払い期限は設けない */
+/** 請求：請求番号は内部管理用・支払い期限は設けない */
 export type InvoiceRecord = {
   id: string;
   invoiceNumber: string;
@@ -210,7 +211,6 @@ export type InvoiceRecord = {
   taxAmount: number;
   totalAmount: number;
   lastUpdated: string;
-  dueDate?: string;
   updateHistory?: Array<{ at: string; action: string }>;
 };
 
@@ -220,13 +220,79 @@ const initialInvoices: InvoiceRecord[] = [
   { id: 'inv3', invoiceNumber: 'INV-202603-0003', customerId: 'CUST-001', customerName: 'A邸プロジェクト', projectName: '追加工事（品川）', status: 'draft', items: [{ id: '1', item: '追加工事', quantity: 1, unit: '式', unitPrice: 50000, amount: 50000 }], subtotal: 50000, taxAmount: 5000, totalAmount: 55000, lastUpdated: '2026-03-10' },
 ];
 
-const initialEstimates: EstimateRecord[] = [];
-const initialOrderTemplates: OrderTemplateRecord[] = [];
+// 請求「見積から作成」デモ用：確定済み見積
+const demoEstimateItems: EstimateLineItem[] = [
+  { id: 'est-li-1', item: '石膏ボード 12.5mm', quantity: 50, unit: '枚', unitPrice: 850, amount: 42500, unitPriceSource: 'master' },
+  { id: 'est-li-2', item: 'LGS @455', quantity: 30, unit: 'm', unitPrice: 1200, amount: 36000, unitPriceSource: 'master' },
+  { id: 'est-li-3', item: '下地処理', quantity: 25, unit: 'm2', unitPrice: 1200, amount: 30000, unitPriceSource: 'master' },
+  { id: 'est-li-4', item: '石膏ボード張り', quantity: 25, unit: 'm2', unitPrice: 1800, amount: 45000, unitPriceSource: 'master' },
+];
+const demoEstimateSubtotal = demoEstimateItems.reduce((s, i) => s + i.amount, 0);
+const demoEstimateTax = Math.round(demoEstimateSubtotal * 0.1);
+const initialEstimates: EstimateRecord[] = [
+  {
+    id: 'est-demo-1',
+    estimateNumber: 'EST-202601-0001',
+    customerId: 'CUST-001',
+    customerName: 'A邸プロジェクト',
+    projectName: '内装工事（品川）',
+    status: 'confirmed',
+    items: demoEstimateItems,
+    subtotal: demoEstimateSubtotal,
+    taxAmount: demoEstimateTax,
+    total: demoEstimateSubtotal + demoEstimateTax,
+    createdAt: '2026-01-10',
+    updatedAt: '2026-01-15',
+  },
+  {
+    id: 'est-demo-2',
+    estimateNumber: 'EST-202601-0002',
+    customerId: '',
+    customerName: 'Bビル改修',
+    projectName: 'オフィス改装工事（新宿）',
+    status: 'confirmed',
+    items: [
+      { id: 'est-li-5', item: 'システム天井', quantity: 80, unit: 'm2', unitPrice: 2500, amount: 200000, unitPriceSource: 'master' },
+      { id: 'est-li-6', item: 'カーペット', quantity: 120, unit: 'm2', unitPrice: 1000, amount: 120000, unitPriceSource: 'master' },
+    ],
+    subtotal: 320000,
+    taxAmount: 32000,
+    total: 352000,
+    createdAt: '2026-01-12',
+    updatedAt: '2026-01-14',
+  },
+];
+// 購買ひな型デモ用
+const initialOrderTemplates: OrderTemplateRecord[] = [
+  {
+    id: 'tpl-1',
+    name: '内装工事用（石膏ボード・LGS）',
+    items: [
+      { id: 'tpl1-1', item: '石膏ボード 12.5mm', quantity: 50, unit: '枚', memo: '天井・壁下地' },
+      { id: 'tpl1-2', item: 'LGS @455', quantity: 30, unit: 'm', memo: '軽量鉄骨' },
+      { id: 'tpl1-3', item: '下地処理', quantity: 25, unit: 'm2' },
+      { id: 'tpl1-4', item: '石膏ボード張り', quantity: 25, unit: 'm2' },
+    ],
+    createdAt: '2026-01-05',
+    updatedAt: '2026-01-05',
+  },
+  {
+    id: 'tpl-2',
+    name: 'オフィス改装用',
+    items: [
+      { id: 'tpl2-1', item: 'システム天井', quantity: 80, unit: 'm2' },
+      { id: 'tpl2-2', item: 'カーペット', quantity: 120, unit: 'm2' },
+    ],
+    createdAt: '2026-01-08',
+    updatedAt: '2026-01-08',
+  },
+];
 
-// ログイン用ユーザー（US-0001: 有効な認証情報でログイン可能。設定の従業員管理と連携する場合は state で同期可）
-const initialLoginUsers = [
-  { id: 'U1', loginId: 'admin', displayName: '管理者', role: 'owner', isActive: true, passwordHash: 'demo' },
-  { id: 'U2', loginId: 'field1', displayName: '現場', role: 'field', isActive: true, passwordHash: 'demo' },
+const EMPLOYEES_STORAGE_KEY = 'lets_employees';
+
+const initialEmployees: EmployeeRecord[] = [
+  { id: 'E1', employeeNumber: 1, name: '管理者', loginId: 'admin', role: 'owner', isActive: true },
+  { id: 'E2', employeeNumber: 2, name: '現場', loginId: 'field1', role: 'field', isActive: true },
 ];
 
 export default function App() {
@@ -242,7 +308,34 @@ export default function App() {
   const [selectedPurchaseOrderId, setSelectedPurchaseOrderId] = useState<string | null>(null);
   const [openEstimateId, setOpenEstimateId] = useState<string | null>(null);
   const [openInvoiceId, setOpenInvoiceId] = useState<string | null>(null);
-  const [loginUsers] = useState(initialLoginUsers);
+  const [employees, setEmployees] = useState<EmployeeRecord[]>(() => {
+    try {
+      const s = localStorage.getItem(EMPLOYEES_STORAGE_KEY);
+      if (s) return JSON.parse(s);
+    } catch (_) {}
+    return initialEmployees;
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(EMPLOYEES_STORAGE_KEY, JSON.stringify(employees));
+    } catch (_) {}
+  }, [employees]);
+
+  const loginUsers = useMemo(
+    () =>
+      employees
+        .filter((e) => e.isActive)
+        .map((e) => ({
+          id: e.id,
+          loginId: e.loginId,
+          displayName: e.name,
+          role: e.role === 'owner' || e.role === 'admin' ? 'owner' : 'field',
+          isActive: true,
+          passwordHash: 'demo' as const,
+        })),
+    [employees]
+  );
 
   const visibleNavItems = useMemo(() => {
     if (!session) return [];
@@ -259,6 +352,7 @@ export default function App() {
             purchaseOrders={purchaseOrders}
             onNavigateToQuote={() => setCurrentPage('quote')}
             onNavigateToPurchase={() => setCurrentPage('purchase')}
+            onNavigateToProcess={() => setCurrentPage('process')}
           />
         );
       case 'quote':
@@ -321,7 +415,7 @@ export default function App() {
       case 'attendance':
         return <Attendance />;
       case 'system-settings':
-        return isField ? <Forbidden403 onGoBack={() => setCurrentPage('dashboard')} /> : <SystemSettings materials={materials} setMaterials={setMaterials} />;
+        return isField ? <Forbidden403 onGoBack={() => setCurrentPage('dashboard')} /> : <SystemSettings materials={materials} setMaterials={setMaterials} employees={employees} setEmployees={setEmployees} />;
       case 'projects':
         return (
           <Projects
@@ -358,8 +452,8 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-background flex">
-      {/* Sidebar */}
-      <div className="w-60 bg-sidebar border-r border-border flex flex-col">
+      {/* Sidebar（工程ページ等でメインが横に広くても縮まないよう shrink-0） */}
+      <div className="w-60 shrink-0 bg-sidebar border-r border-border flex flex-col">
         <div className="h-14 flex items-center px-6 border-b border-border">
           <h1 className="text-lg font-medium text-foreground">LET'S</h1>
         </div>

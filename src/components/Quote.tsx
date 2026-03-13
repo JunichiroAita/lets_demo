@@ -40,7 +40,7 @@ export interface TakeoffJobRecord {
   startedAt: string;
   endedAt?: string;
   status: 'running' | 'completed' | 'error';
-  /** 失敗時のエラーコード（US-0505） */
+  /** 失敗時のエラーコード */
   errorCode?: string;
   /** 失敗理由（ログ・ジョブ履歴から参照） */
   errorMessage?: string;
@@ -67,11 +67,11 @@ export interface DrawingRecord {
   aiSuggestedPages?: number[];
   archived?: boolean;
   takeoffJobHistory: TakeoffJobRecord[];
-  /** 拾い結果（US-0502 構造化データ。完了時のみ） */
+  /** 拾い結果（構造化データ。完了時のみ） */
   takeoffResult?: TakeoffResult;
-  /** 再実行回数（US-0508） */
+  /** 再実行回数 */
   retryCount?: number;
-  /** 処理中時のパイプライン進捗表示用（US-0502 超過時も進捗継続） */
+  /** 処理中時のパイプライン進捗表示用（超過時も進捗継続） */
   pipelineStep?: string;
 }
 
@@ -88,9 +88,9 @@ export interface TakeoffResultItem {
   unit: string;
   category?: string;
   areaM2?: number;
-  /** 誤差チェック閾値超過時の警告（US-0504） */
+  /** 誤差チェック閾値超過時の警告 */
   warning?: string;
-  /** 算出根拠（歩掛ID・計算式）（US-0504） */
+  /** 算出根拠（歩掛ID・計算式） */
   calculationBasis?: { stepId: string; formula?: string };
 }
 export interface TakeoffResult {
@@ -99,7 +99,7 @@ export interface TakeoffResult {
   completedAt: string;
 }
 
-/** LLM/誤差閾値など設定（US-0503/0504）。更新は監査ログ */
+/** LLM/誤差閾値など設定。更新は監査ログ */
 export interface TakeoffSettings {
   llmModel: string;
   llmPrompt: string;
@@ -210,7 +210,7 @@ interface QuoteProps {
   setOpenEstimateId?: React.Dispatch<React.SetStateAction<string | null>>;
 }
 
-/** システム設定の税率・端数（US-0601） */
+/** システム設定の税率・端数 */
 function getBasicSettings(): { taxRate: number; taxRounding: 'half' | 'down' | 'up' } {
   try {
     const saved = localStorage.getItem('lets_basic_settings');
@@ -229,7 +229,7 @@ function calcTaxAmount(subtotal: number, taxRate: number, rounding: 'half' | 'do
   return Math.round(raw);
 }
 
-/** 見積番号付番（US-0604: 暫定 EST-YYYYMM-####） */
+/** 見積番号付番（暫定 EST-YYYYMM-####） */
 function nextEstimateNumber(estimates: EstimateRecord[]): string {
   const yyyymm = new Date().toISOString().slice(0, 7).replace('-', '');
   const sameMonth = estimates.filter((e) => e.estimateNumber.startsWith(`EST-${yyyymm}`));
@@ -256,7 +256,13 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
   /** アップロード直後の「どの図面をAIに読み取らせるか」選択用 */
   const [selectPagesDrawing, setSelectPagesDrawing] = useState<DrawingRecord | null>(null);
   const [selectPagesManualInput, setSelectPagesManualInput] = useState('');
-  /** 見積一覧 / 詳細（F-03） */
+  /** 図面一覧の絞込 */
+  const [drawingListKeyword, setDrawingListKeyword] = useState('');
+  const [drawingListDateFrom, setDrawingListDateFrom] = useState('');
+  const [drawingListDateTo, setDrawingListDateTo] = useState('');
+  const [drawingListStatus, setDrawingListStatus] = useState<string>('all');
+  const [drawingListShowArchived, setDrawingListShowArchived] = useState(false);
+  /** 見積一覧 / 詳細 */
   const [estimateView, setEstimateView] = useState<'projects' | 'list' | 'detail'>('projects');
   const [selectedEstimateId, setSelectedEstimateId] = useState<string | null>(null);
   const [cancelReason, setCancelReason] = useState('');
@@ -266,9 +272,24 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
   const [estimateListDateFrom, setEstimateListDateFrom] = useState('');
   const [estimateListDateTo, setEstimateListDateTo] = useState('');
   const [estimateListKeyword, setEstimateListKeyword] = useState('');
+  /** 見積詳細で未保存の編集があるとき true。保存 or キャンセル必須 */
+  const [estimateDetailDirty, setEstimateDetailDirty] = useState(false);
+  const lastSavedEstimateRef = useRef<EstimateRecord | null>(null);
   useEffect(() => {
     setDetailTargetPagesInput(detailDrawing?.targetPages?.length ? detailDrawing.targetPages.join(',') : '');
   }, [detailDrawing?.id]);
+  /** 見積詳細を開いたときにスナップショットを保存。キャンセル時に復元用 */
+  useEffect(() => {
+    if (selectedEstimateId) {
+      const est = estimates.find((e) => e.id === selectedEstimateId);
+      if (est) {
+        lastSavedEstimateRef.current = { ...est, items: est.items.map((li) => ({ ...li })) };
+      }
+    } else {
+      lastSavedEstimateRef.current = null;
+    }
+    setEstimateDetailDirty(false);
+  }, [selectedEstimateId]);
 
   useEffect(() => {
     if (openEstimateId && estimates.some((e) => e.id === openEstimateId)) {
@@ -295,6 +316,20 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
     project.projectName.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  /** 図面一覧の絞込。デフォルトはアーカイブ除外 */
+  const filteredDrawings = useMemo(() => {
+    const list = selectedProject?.drawings ?? [];
+    let out = drawingListShowArchived ? list : list.filter((d) => !d.archived);
+    if (drawingListKeyword.trim()) {
+      const k = drawingListKeyword.toLowerCase();
+      out = out.filter((d) => d.name.toLowerCase().includes(k) || (d.registeredBy || '').toLowerCase().includes(k));
+    }
+    if (drawingListDateFrom) out = out.filter((d) => d.registeredAt >= drawingListDateFrom);
+    if (drawingListDateTo) out = out.filter((d) => d.registeredAt <= drawingListDateTo);
+    if (drawingListStatus !== 'all') out = out.filter((d) => d.status === drawingListStatus);
+    return out.sort((a, b) => b.registeredAt.localeCompare(a.registeredAt));
+  }, [selectedProject?.drawings, drawingListKeyword, drawingListDateFrom, drawingListDateTo, drawingListStatus, drawingListShowArchived]);
+
   /** 対象ページ選択ダイアログでAI判定結果を入力欄に反映 */
   useEffect(() => {
     if (!selectPagesDrawing || !selectedProject) return;
@@ -304,24 +339,38 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
 
   const loadDemoData = () => {
     if (!selectedProjectId) return;
+    const now = new Date().toISOString().split('T')[0];
+    const registeredBy = session?.user?.displayName ?? 'オーナー';
     setQuoteProjects(prev =>
-      prev.map(p =>
-        p.id === selectedProjectId
-          ? {
-              ...p,
-              extractedItems: [...DEMO_EXTRACTED],
-              quoteItems: DEMO_QUOTE_ITEMS.map((q) => ({ ...q })),
-              totalAmount: DEMO_TOTAL,
-              uploadedFiles: p.uploadedFiles.length ? p.uploadedFiles : [{ name: '図面.pdf' }],
-            }
-          : p
-      )
+      prev.map(p => {
+        if (p.id !== selectedProjectId) return p;
+        const hasDrawings = (p.drawings?.length ?? 0) > 0;
+        const demoDrawing: DrawingRecord = {
+          id: `DWG-demo-${Date.now()}`,
+          name: '図面.pdf',
+          registeredAt: now,
+          registeredBy,
+          status: '未処理',
+          lastUpdated: now,
+          takeoffJobHistory: [],
+          archived: false,
+        };
+        return {
+          ...p,
+          extractedItems: [...DEMO_EXTRACTED],
+          quoteItems: DEMO_QUOTE_ITEMS.map((q) => ({ ...q })),
+          totalAmount: DEMO_TOTAL,
+          uploadedFiles: p.uploadedFiles.length ? p.uploadedFiles : [{ name: '図面.pdf' }],
+          drawings: hasDrawings ? p.drawings : [...(p.drawings ?? []), demoDrawing],
+          lastUpdated: now,
+        };
+      })
     );
-    toast.success('デモデータを読み込みました。「算出結果」「見積書」タブで確認できます。');
+    toast.success('デモデータを読み込みました。「算出結果」「見積書」タブで確認できます。図面一覧から解析するファイルを選べます。');
     setActiveTab('extract');
   };
 
-  /** US-0601: 拾い結果から見積（下書き）生成。マスタ単価 or AI算出単価・税率はシステム設定 */
+  /** 拾い結果から見積（下書き）生成。マスタ単価 or AI算出単価・税率はシステム設定 */
   const createEstimateFromExtract = () => {
     if (!selectedProject || !selectedProjectId) return;
     const extracted = selectedProject.extractedItems;
@@ -394,7 +443,7 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
   const updateEstimateItem = (estId: string, lineId: string, field: 'quantity' | 'unitPrice', value: number) => {
     setEstimates((prev) =>
       prev.map((e) => {
-        if (e.id !== estId || e.status !== 'draft') return e;
+        if (e.id !== estId || e.status === 'cancelled') return e;
         const items = e.items.map((li) => {
           if (li.id !== lineId) return li;
           if (field === 'quantity') {
@@ -408,12 +457,13 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
         return { ...e, items, subtotal, taxAmount, total, updatedAt: new Date().toISOString().split('T')[0] };
       })
     );
+    if (estId === selectedEstimateId) setEstimateDetailDirty(true);
   };
 
   const addEstimateRow = (estId: string) => {
     setEstimates((prev) =>
       prev.map((e) => {
-        if (e.id !== estId || e.status !== 'draft') return e;
+        if (e.id !== estId || e.status === 'cancelled') return e;
         const newItem: EstimateLineItem = {
           id: `li-${Date.now()}`,
           item: '',
@@ -428,17 +478,19 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
         return { ...e, items, subtotal, taxAmount, total, updatedAt: new Date().toISOString().split('T')[0] };
       })
     );
+    if (estId === selectedEstimateId) setEstimateDetailDirty(true);
   };
 
   const removeEstimateRow = (estId: string, lineId: string) => {
     setEstimates((prev) =>
       prev.map((e) => {
-        if (e.id !== estId || e.status !== 'draft') return e;
+        if (e.id !== estId || e.status === 'cancelled') return e;
         const items = e.items.filter((li) => li.id !== lineId);
         const { subtotal, taxAmount, total } = recalcEstimate(items, getBasicSettings().taxRate, getBasicSettings().taxRounding);
         return { ...e, items, subtotal, taxAmount, total, updatedAt: new Date().toISOString().split('T')[0] };
       })
     );
+    if (estId === selectedEstimateId) setEstimateDetailDirty(true);
   };
 
   const updateEstimateHeader = (estId: string, field: 'customerId' | 'customerName' | 'projectName', value: string) => {
@@ -453,12 +505,13 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
         return { ...e, projectName: value, updatedAt: new Date().toISOString().split('T')[0] };
       })
     );
+    if (estId === selectedEstimateId) setEstimateDetailDirty(true);
   };
 
   const updateEstimateLineItem = (estId: string, lineId: string, field: 'item' | 'quantity' | 'unit' | 'unitPrice', value: string | number) => {
     setEstimates((prev) =>
       prev.map((e) => {
-        if (e.id !== estId || e.status !== 'draft') return e;
+        if (e.id !== estId || e.status === 'cancelled') return e;
         const items = e.items.map((li) => {
           if (li.id !== lineId) return li;
           if (field === 'item') return { ...li, item: String(value) };
@@ -476,15 +529,20 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
         return { ...e, items, subtotal, taxAmount, total, updatedAt: new Date().toISOString().split('T')[0] };
       })
     );
+    if (estId === selectedEstimateId) setEstimateDetailDirty(true);
   };
 
-  /** US-0602: 保存時バリデーション（不正値は保存不可） */
+  /** 保存時バリデーション（不正値：負数・0・文字などは保存不可） */
   const validateEstimate = (e: EstimateRecord): string | null => {
     if (!e.customerId?.trim()) return '顧客を選択してください。';
     if (!e.projectName?.trim()) return '案件名を入力してください。';
+    if (!e.items.length) return '明細が1行以上必要です。';
     for (const li of e.items) {
-      if (li.quantity <= 0 || !Number.isFinite(li.quantity)) return `品目「${li.item || '(未入力)'}」の数量が不正です。`;
-      if (li.unitPrice < 0 || !Number.isFinite(li.unitPrice)) return `品目「${li.item}」の単価が不正です。`;
+      if (typeof li.quantity !== 'number' || !Number.isFinite(li.quantity) || li.quantity <= 0)
+        return `品目「${li.item || '(未入力)'}」の数量は正の数で入力してください。`;
+      if (typeof li.unitPrice !== 'number' || !Number.isFinite(li.unitPrice) || li.unitPrice < 0)
+        return `品目「${li.item || '(未入力)'}」の単価は0以上で入力してください。`;
+      if (!li.item?.trim()) return '品目名を入力してください。';
     }
     return null;
   };
@@ -496,10 +554,52 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
       return;
     }
     auditLog({ userId: session?.user?.id ?? '', action: '見積編集', targetId: est.id, result: 'success' });
+    lastSavedEstimateRef.current = { ...est, items: est.items.map((li) => ({ ...li })) };
+    setEstimateDetailDirty(false);
     toast.success('見積を保存しました。');
   };
 
-  /** US-0604: 確定（見積番号付番・監査必須） */
+  /** 見積詳細の編集を破棄してスナップショットに戻す */
+  const discardEstimateDetailEdits = () => {
+    const saved = lastSavedEstimateRef.current;
+    if (saved && selectedEstimateId) {
+      setEstimates((prev) =>
+        prev.map((e) => (e.id === selectedEstimateId ? { ...saved, items: saved.items.map((li) => ({ ...li })) } : e))
+      );
+    }
+    setEstimateDetailDirty(false);
+  };
+
+  const [estimateBackConfirmOpen, setEstimateBackConfirmOpen] = useState(false);
+  const goBackToList = () => {
+    if (estimateDetailDirty) {
+      setEstimateBackConfirmOpen(true);
+      return;
+    }
+    setSelectedEstimateId(null);
+  };
+  const handleEstimateBackSaveAndGo = () => {
+    if (!selectedEstimate) return;
+    const err = validateEstimate(selectedEstimate);
+    if (err) {
+      toast.error(err);
+      return;
+    }
+    auditLog({ userId: session?.user?.id ?? '', action: '見積編集', targetId: selectedEstimate.id, result: 'success' });
+    lastSavedEstimateRef.current = { ...selectedEstimate, items: selectedEstimate.items.map((li) => ({ ...li })) };
+    setEstimateDetailDirty(false);
+    setEstimateBackConfirmOpen(false);
+    setSelectedEstimateId(null);
+    toast.success('見積を保存しました。');
+  };
+  const handleEstimateBackDiscardAndGo = () => {
+    discardEstimateDetailEdits();
+    setEstimateBackConfirmOpen(false);
+    setSelectedEstimateId(null);
+    toast.info('変更を破棄して一覧へ戻りました。');
+  };
+
+  /** 確定（見積番号付番・監査必須） */
   const confirmEstimate = (est: EstimateRecord) => {
     const err = validateEstimate(est);
     if (err) {
@@ -514,7 +614,7 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
     toast.success(`見積を確定しました。見積番号: ${num}`);
   };
 
-  /** US-0606: 取消（理由・監査） */
+  /** 取消（理由・監査） */
   const doCancelEstimate = (est: EstimateRecord, reason: string) => {
     setEstimates((prev) =>
       prev.map((e) => (e.id === est.id ? { ...e, status: 'cancelled' as const, cancelReason: reason.trim() || undefined, updatedAt: new Date().toISOString().split('T')[0] } : e))
@@ -526,7 +626,7 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
     toast.success('見積を取消しました。');
   };
 
-  /** US-0605: 複製（改版元ID保持） */
+  /** 複製（改版元ID保持） */
   const duplicateEstimate = (est: EstimateRecord) => {
     const now = new Date().toISOString().split('T')[0];
     const copy: EstimateRecord = {
@@ -544,8 +644,12 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
     toast.success('見積を複製しました（改版元を参照）。');
   };
 
-  /** US-0607: Excel出力（監査） */
+  /** Excel出力（監査）。取消後は帳票出力制限のため実行不可 */
   const exportEstimateExcel = (est: EstimateRecord) => {
+    if (est.status === 'cancelled') {
+      toast.error('取消済みの見積はExcel出力できません。');
+      return;
+    }
     const { taxRate } = getBasicSettings();
     const rows = [
       ['見積書'],
@@ -610,15 +714,15 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
     e.target.value = '';
     if (!file || !selectedProjectId) return;
     if (file.type !== 'application/pdf') {
-      toast.error('PDF以外のファイルは受付できません。PDFをアップロードしてください。');
+      toast.error('受付拒否：PDF以外のファイルは受付できません。PDFをアップロードしてください。');
       return;
     }
     if (file.size > MAX_PDF_SIZE_BYTES) {
-      toast.error(`50MBを超えるファイルは受付できません。現在: ${(file.size / 1024 / 1024).toFixed(1)}MB`);
+      toast.error(`50MB超のため受付拒否（暫定NFR）。現在: ${(file.size / 1024 / 1024).toFixed(1)}MB`);
       return;
     }
     if (file.name.toLowerCase().includes('over200') || file.name.toLowerCase().includes('200page')) {
-      toast.error('200ページを超えるPDFは受付できません。');
+      toast.error('200ページ超のため受付拒否（暫定NFR）。');
       return;
     }
     const now = new Date().toISOString().split('T')[0];
@@ -656,7 +760,7 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
     toast.success(`「${file.name}」を登録しました。どの図面をAIに読み取らせるか選択してください。`);
   };
 
-  /** US-0501: 自動拾い開始。未処理 or エラー時のみジョブ作成。処理中は二重起動しない。 */
+  /** 自動拾い開始。未処理 or エラー時のみジョブ作成。処理中は二重起動しない。 */
   const startTakeoff = (drawing: DrawingRecord) => {
     if (!selectedProjectId) return;
     if (drawing.status === '処理中') {
@@ -699,7 +803,7 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
     runTakeoffPipeline(drawing.id, jobId);
   };
 
-  /** US-0502–0505: OCRパイプライン（前処理→OCR→構造化）。完了/失敗でジョブ更新。進捗表示継続。 */
+  /** OCRパイプライン（前処理→OCR→構造化）。完了/失敗でジョブ更新。進捗表示継続。 */
   const runTakeoffPipeline = (drawingId: string, jobId: string) => {
     const steps = ['前処理中', 'OCR実行中', '構造化データ変換中', 'レイアウト解析・LLM連携中', '数量・平米算出・誤差チェック中'];
     const failCodes = ['OCR_FAILED', 'LAYOUT_PARSE_ERROR', 'CALC_ERROR'] as const;
@@ -915,7 +1019,7 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
           {filteredProjects.map((project) => (
             <div
               key={project.id}
-              className={`p-4 border-b border-border cursor-pointer hover:bg-muted/50 transition-colors ${selectedProjectId === project.id ? 'bg-muted/70 border-r-2 border-r-primary' : ''}`}
+              className={`p-4 border-b border-border cursor-pointer hover:bg-muted/50 transition-colors ${selectedProjectId === project.id ? 'bg-muted/70 border-r-2 border-r-border' : ''}`}
               onClick={() => setSelectedProjectId(project.id)}
             >
               <div className="space-y-2">
@@ -957,17 +1061,17 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                 <TabsList className="grid w-full grid-cols-3">
                   <TabsTrigger value="upload">図面アップロード</TabsTrigger>
                   <TabsTrigger value="extract">算出結果</TabsTrigger>
-                  <TabsTrigger value="estimates">見積一覧（F-03）</TabsTrigger>
+                  <TabsTrigger value="estimates">見積一覧</TabsTrigger>
                 </TabsList>
                 <TabsContent value="upload" className="space-y-6">
                   <Card className="border border-border">
                     <CardHeader>
-                      <CardTitle>図面アップロード（EPIC-04 F-01）</CardTitle>
-                      <p className="text-sm text-muted-foreground mt-1">
-                        <strong>1.</strong> PDFをアップロード → <strong>2.</strong> どの図面をAIに読み取らせるか対象ページを選択 → <strong>3.</strong> 「選択を確定してAI解析を開始」でAI解析を実行します。
+                      <CardTitle>図面アップロード</CardTitle>
+                        <p className="text-sm text-muted-foreground mt-1">
+                        <strong>1.</strong> PDFをアップロード → <strong>2.</strong> 表示される図面一覧から<strong>解析するファイルを選択</strong> → <strong>3.</strong> その図面の「自動拾い開始」で対象ページを選択（AI自動判定 or 手動指定）→ <strong>4.</strong> 「選択を確定してAI解析を開始」でAI解析を実行します。
                       </p>
                       <p className="text-sm text-muted-foreground mt-1">
-                        PDFのみ・50MB以下（200ページ超は本番で拒否）。図面PDFには他業種用・図面以外のページが含まれる場合があるため、対象ページの選択が必須です。
+                        PDF以外・50MB超・200ページ超は受付拒否（理由を表示）。複数アップロードした場合は図面一覧から解析したいファイルを選んでください。図面PDFに他業種用・図面以外のページが含まれる場合はAIで図面ページを自動判定するか、対象ページを手動指定できます。登録時はステータス「未処理」、アップロード操作は監査ログに残ります（対象：図面ID）。
                       </p>
                     </CardHeader>
                     <CardContent className="space-y-4">
@@ -981,23 +1085,23 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                       <div
                         className="border-2 border-dashed border-border rounded-md p-8 text-center hover:bg-muted/50 cursor-pointer transition-colors"
                         onClick={() => fileInputRef.current?.click()}
-                        onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('border-primary'); }}
-                        onDragLeave={(e) => { e.preventDefault(); e.currentTarget.classList.remove('border-primary'); }}
+                        onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('border-border'); }}
+                        onDragLeave={(e) => { e.preventDefault(); e.currentTarget.classList.remove('border-border'); }}
                         onDrop={(e) => {
                           e.preventDefault();
-                          e.currentTarget.classList.remove('border-primary');
+                          e.currentTarget.classList.remove('border-border');
                           const file = e.dataTransfer.files?.[0];
                           if (!file) return;
                           if (file.type !== 'application/pdf') {
-                            toast.error('PDF以外のファイルは受付できません。PDFをアップロードしてください。');
+                            toast.error('受付拒否：PDF以外のファイルは受付できません。PDFをアップロードしてください。');
                             return;
                           }
                           if (file.size > MAX_PDF_SIZE_BYTES) {
-                            toast.error(`50MBを超えるファイルは受付できません。現在: ${(file.size / 1024 / 1024).toFixed(1)}MB`);
+                            toast.error(`50MB超のため受付拒否（暫定NFR）。現在: ${(file.size / 1024 / 1024).toFixed(1)}MB`);
                             return;
                           }
                           if (file.name.toLowerCase().includes('over200') || file.name.toLowerCase().includes('200page')) {
-                            toast.error('200ページを超えるPDFは受付できません。');
+                            toast.error('200ページ超のため受付拒否（暫定NFR）。');
                             return;
                           }
                           const now = new Date().toISOString().split('T')[0];
@@ -1040,10 +1144,118 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                         </Button>
                         <span className="text-sm text-muted-foreground">サンプルの算出結果・見積を即表示</span>
                       </div>
-                      {/* US-0503: LLM/誤差閾値設定（更新は監査ログ） */}
+                      {(selectedProject?.drawings?.length ?? 0) === 0 && (
+                        <p className="text-sm text-muted-foreground mt-4">
+                          ※ PDFをアップロードすると、ここに図面一覧が表示されます。一覧から解析するファイルを選び、「自動拾い開始」で対象ページを指定してAI解析を実行できます。
+                        </p>
+                      )}
+
+                      {/* アップロード後にのみ図面一覧・検索を表示。解析するファイルを選択できる */}
+                      {(selectedProject?.drawings?.length ?? 0) > 0 && (
+                      <Card className="border border-border mt-6">
+                        <CardHeader>
+                          <CardTitle>図面一覧・検索</CardTitle>
+                          <p className="text-sm text-muted-foreground">
+                            アップロードした図面から<strong>解析するファイルを選択</strong>し、行の「自動拾い開始」で対象ページを指定してAI解析を実行できます。キーワード・期間・ステータスで絞り込み。アーカイブは既定で非表示。
+                          </p>
+                          <div className="flex flex-wrap items-center gap-3 mt-3">
+                            <div className="relative flex-1 min-w-[120px] max-w-xs">
+                              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                              <Input placeholder="キーワード（図面名・登録者）" value={drawingListKeyword} onChange={(e) => setDrawingListKeyword(e.target.value)} className="pl-8 h-9" />
+                            </div>
+                            <Select value={drawingListStatus} onValueChange={setDrawingListStatus}>
+                              <SelectTrigger className="w-28 h-9"><SelectValue placeholder="ステータス" /></SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="all">すべて</SelectItem>
+                                <SelectItem value="未処理">未処理</SelectItem>
+                                <SelectItem value="処理中">処理中</SelectItem>
+                                <SelectItem value="完了">完了</SelectItem>
+                                <SelectItem value="エラー">エラー</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <div className="flex items-center gap-1">
+                              <Input type="date" value={drawingListDateFrom} onChange={(e) => setDrawingListDateFrom(e.target.value)} className="w-36 h-9" placeholder="登録日から" />
+                              <span className="text-muted-foreground">～</span>
+                              <Input type="date" value={drawingListDateTo} onChange={(e) => setDrawingListDateTo(e.target.value)} className="w-36 h-9" placeholder="登録日まで" />
+                            </div>
+                            <label className="flex items-center gap-2 text-sm cursor-pointer">
+                              <input type="checkbox" checked={drawingListShowArchived} onChange={(e) => setDrawingListShowArchived(e.target.checked)} className="rounded" />
+                              アーカイブ含む
+                            </label>
+                          </div>
+                        </CardHeader>
+                        <CardContent className="p-0">
+                          {filteredDrawings.length === 0 ? (
+                            <div className="py-8 text-center text-muted-foreground text-sm">
+                              {selectedProject?.drawings?.length ? '絞り込みに一致する図面がありません。' : '図面がありません。PDFをアップロードしてください。'}
+                            </div>
+                          ) : (
+                            <Table>
+                              <TableHeader>
+                                <TableRow>
+                                  <TableHead>図面名</TableHead>
+                                  <TableHead>登録日</TableHead>
+                                  <TableHead>登録者</TableHead>
+                                  <TableHead>ステータス</TableHead>
+                                  <TableHead>最終更新</TableHead>
+                                  <TableHead className="text-right">操作</TableHead>
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {filteredDrawings.map((d) => (
+                                  <TableRow key={d.id}>
+                                    <TableCell className="font-medium">{d.name}</TableCell>
+                                    <TableCell className="text-sm">{d.registeredAt}</TableCell>
+                                    <TableCell className="text-sm">{d.registeredBy}</TableCell>
+                                    <TableCell>
+                                      <Badge variant={d.status === '完了' ? 'default' : d.status === 'エラー' ? 'destructive' : d.status === '処理中' ? 'secondary' : 'outline'}>
+                                        {d.status}
+                                      </Badge>
+                                      {d.archived && <Badge variant="outline" className="ml-1 text-xs">アーカイブ</Badge>}
+                                    </TableCell>
+                                    <TableCell className="text-sm">{d.lastUpdated}</TableCell>
+                                    <TableCell className="text-right">
+                                      <div className="flex items-center justify-end gap-1 flex-wrap">
+                                        {d.status !== '処理中' && (
+                                          <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            className="h-8 text-xs"
+                                            onClick={() => {
+                                              if ((d.targetPages?.length ?? 0) > 0) {
+                                                startTakeoff(d);
+                                              } else {
+                                                setSelectPagesDrawing(d);
+                                                setSelectPagesManualInput((d.targetPages ?? []).join(','));
+                                              }
+                                            }}
+                                            title={d.targetPages?.length ? '自動拾い開始' : '対象ページを選択してから開始'}
+                                          >
+                                            自動拾い開始
+                                          </Button>
+                                        )}
+                                        {d.status === '処理中' && <span className="text-xs text-muted-foreground">処理中</span>}
+                                        <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => { setResultDrawing(d); }}>結果</Button>
+                                        <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => { setDetailDrawing(d); setDetailTargetPagesInput((d.targetPages ?? []).join(',')); }}>詳細</Button>
+                                        {!d.archived && (
+                                          <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => archiveDrawing(d)}>アーカイブ</Button>
+                                        )}
+                                        <Button variant="ghost" size="sm" className="h-8 text-xs text-destructive" onClick={() => setDeleteConfirmDrawing(d)}>削除</Button>
+                                      </div>
+                                    </TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          )}
+                        </CardContent>
+                      </Card>
+                      )}
+
+                      {/* LLM/誤差閾値設定（更新は監査ログ） */}
                       <div className="border-t border-border pt-4 mt-4">
                         <Button variant="ghost" size="sm" onClick={() => setShowTakeoffSettings((v) => !v)}>
-                          {showTakeoffSettings ? '拾い・LLM設定を閉じる' : '拾い・LLM設定（US-0503）'}
+                          {showTakeoffSettings ? '拾い・LLM設定を閉じる' : '拾い・LLM設定'}
                         </Button>
                         {showTakeoffSettings && (
                           <div className="grid gap-2 mt-2 text-sm">
@@ -1096,16 +1308,59 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                   <Dialog open={!!selectPagesDrawing} onOpenChange={(open) => { if (!open) { setSelectPagesDrawing(null); setSelectPagesManualInput(''); } }}>
                     <DialogContent className="max-w-lg">
                       <DialogHeader>
-                        <DialogTitle>対象ページの選択</DialogTitle>
+                        <DialogTitle>対象の選択</DialogTitle>
                         <DialogDescription>
-                          {selectPagesDrawing?.name} のうち、<strong>どの図面（ページ）をAIに読み取らせますか？</strong> 対象を選択してからAI解析を実行できます。
+                          解析する<strong>ファイルを選択</strong>し、そのファイルのうちどのページをAIに読み取らせるか指定してください。
                         </DialogDescription>
                       </DialogHeader>
                       <div className="space-y-4 py-2">
+                        {/* 解析するファイルをファイル名で選択 */}
+                        <div>
+                          <Label className="text-sm font-medium">解析するファイル</Label>
+                          {(() => {
+                            const drawingList = (selectedProject?.drawings ?? []).filter((d) => !d.archived);
+                            if (drawingList.length === 0) return null;
+                            if (drawingList.length === 1) {
+                              return (
+                                <p className="mt-1.5 px-3 py-2 rounded-md bg-muted/50 text-sm font-medium">
+                                  {selectPagesDrawing?.name ?? drawingList[0].name}
+                                </p>
+                              );
+                            }
+                            return (
+                              <Select
+                                value={selectPagesDrawing?.id ?? ''}
+                                onValueChange={(id) => {
+                                  const d = drawingList.find((x) => x.id === id);
+                                  if (d) {
+                                    setSelectPagesDrawing(d);
+                                    setSelectPagesManualInput((d.targetPages ?? []).join(', '));
+                                  }
+                                }}
+                              >
+                                <SelectTrigger className="mt-1.5">
+                                  <SelectValue placeholder="ファイルを選択" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {drawingList.map((d) => (
+                                    <SelectItem key={d.id} value={d.id}>
+                                      {d.name}
+                                      {d.targetPages?.length ? ` （対象: ${d.targetPages.join(', ')} ページ）` : ''}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            );
+                          })()}
+                        </div>
                         {selectPagesDrawing && (() => {
                           const current = selectedProject?.drawings.find((d) => d.id === selectPagesDrawing.id) ?? selectPagesDrawing;
                           return (
                             <>
+                              <div className="border-t border-border pt-3">
+                                <Label className="text-sm font-medium">{current.name} の対象ページ</Label>
+                                <p className="text-xs text-muted-foreground mt-0.5">どのページをAIに読み取らせますか？ 数字で指定するか、AIで自動判定してください。</p>
+                              </div>
                               <div className="flex flex-wrap items-center gap-2">
                                 <Button
                                   size="sm"
@@ -1120,7 +1375,7 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                                 ) : null}
                               </div>
                               <div>
-                                <Label className="text-sm">手動で指定（例: 1,3,5-7）</Label>
+                                <Label className="text-sm">ページ番号を手動で指定（例: 1,3,5-7）</Label>
                                 <Input
                                   placeholder="例: 1,3,5-7"
                                   className="mt-1"
@@ -1185,7 +1440,7 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                   >
                     <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
                       <DialogHeader>
-                        <DialogTitle>図面詳細・プレビュー（US-0403）</DialogTitle>
+                        <DialogTitle>図面詳細・プレビュー</DialogTitle>
                         <DialogDescription>
                           {detailDrawing?.name} — 登録日: {detailDrawing?.registeredAt} / 登録者: {detailDrawing?.registeredBy}
                         </DialogDescription>
@@ -1224,7 +1479,7 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                             </div>
                             <div className="flex items-end gap-2">
                               <div className="flex-1">
-                                <Label className="text-sm font-medium">対象ページを手動指定（US-0401）</Label>
+                                <Label className="text-sm font-medium">対象ページを手動指定</Label>
                                 <Input
                                   placeholder="例: 1,3,5-7（カンマ・ハイフン区切り）"
                                   value={detailTargetPagesInput}
@@ -1315,7 +1570,7 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                     </DialogContent>
                   </Dialog>
 
-                  {/* US-0506: 拾い結果表示（処理中=進捗 / 完了=結果 / 失敗=エラー+再実行） */}
+                  {/* 拾い結果表示（処理中=進捗 / 完了=結果 / 失敗=エラー+再実行） */}
                   <Dialog
                     open={!!resultDrawing}
                     onOpenChange={(open) => {
@@ -1327,7 +1582,7 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                   >
                     <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
                       <DialogHeader>
-                        <DialogTitle>拾い結果（US-0506 / F-02）</DialogTitle>
+                        <DialogTitle>拾い結果</DialogTitle>
                         <DialogDescription>
                           {resultDrawing?.name}
                           {(() => {
@@ -1344,7 +1599,7 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                               <div className="rounded-lg border border-border bg-muted/30 p-6 text-center">
                                 <p className="font-medium text-primary">処理中です</p>
                                 <p className="text-sm text-muted-foreground mt-2">{current.pipelineStep ?? '前処理→OCR→構造化データ変換を実行しています。'}</p>
-                                <p className="text-xs text-muted-foreground mt-2">（US-0502: 進捗表示は継続します）</p>
+                                <p className="text-xs text-muted-foreground mt-2">進捗表示は継続します</p>
                               </div>
                             );
                           }
@@ -1352,13 +1607,13 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                             const lastJob = current.takeoffJobHistory.filter((j) => j.status === 'error').pop() ?? current.takeoffJobHistory[current.takeoffJobHistory.length - 1];
                             return (
                               <div className="space-y-4">
-                                <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4">
+                                <div className="rounded-lg border border-border bg-muted/50 p-4">
                                   <p className="font-medium text-destructive">ジョブが失敗しました</p>
                                   <p className="text-sm mt-1">エラーコード: {lastJob?.errorCode ?? 'UNKNOWN'}</p>
                                   <p className="text-sm text-muted-foreground">{lastJob?.errorMessage ?? lastJob?.error ?? '原因の詳細はジョブ履歴を参照してください。'}</p>
                                 </div>
                                 <div className="flex items-center gap-2">
-                                  <Button onClick={() => startTakeoff(current)}>再実行（US-0508）</Button>
+                                  <Button onClick={() => startTakeoff(current)}>再実行</Button>
                                   <span className="text-xs text-muted-foreground">再実行回数: {current.retryCount ?? 0}</span>
                                 </div>
                               </div>
@@ -1389,7 +1644,7 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                                   </Table>
                                 </div>
                                 <div>
-                                  <Label className="text-sm font-medium">部材・数量・平米（US-0507: 編集可能）</Label>
+                                  <Label className="text-sm font-medium">部材・数量・平米（編集可能）</Label>
                                   <Table className="mt-1">
                                     <TableHeader>
                                       <TableRow>
@@ -1512,16 +1767,21 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                       <AlertDialogHeader>
                         <AlertDialogTitle>図面を削除しますか？</AlertDialogTitle>
                         <AlertDialogDescription>
-                          {deleteConfirmDrawing?.name} を削除すると復元できません。よろしいですか？（US-0404）
+                          「{deleteConfirmDrawing?.name}」を削除すると<strong>復元できません</strong>。この操作は監査ログに記録されます。よろしいですか？
                         </AlertDialogDescription>
                       </AlertDialogHeader>
                       <AlertDialogFooter>
                         <AlertDialogCancel onClick={() => setDeleteConfirmDrawing(null)}>キャンセル</AlertDialogCancel>
                         <AlertDialogAction
                           className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                          onClick={() => deleteConfirmDrawing && deleteDrawing(deleteConfirmDrawing)}
+                          onClick={() => {
+                            if (deleteConfirmDrawing) {
+                              deleteDrawing(deleteConfirmDrawing);
+                              setDeleteConfirmDrawing(null);
+                            }
+                          }}
                         >
-                          削除する
+                          削除する（復元不可）
                         </AlertDialogAction>
                       </AlertDialogFooter>
                     </AlertDialogContent>
@@ -1542,7 +1802,7 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                         <p className="text-muted-foreground">図面をアップロードしてAI解析を実行するか、「デモを読み込む」でサンプルを表示してください。</p>
                       ) : (
                         <>
-                          <p className="text-sm text-muted-foreground mb-4">図面から抽出した材料・工種と数量です。見積書タブで単価を付けて見積を作成できます。</p>
+                          <p className="text-sm text-muted-foreground mb-4">図面から抽出した材料・工種と数量です。見積作成時：材料価格マスタに登録済みの品目はマスタ単価を採用、未登録はAIが市場相場で単価を算出します（いずれも編集可）。AI算出単価は明細で「AI算出」バッジで区別。税率・端数はシステム設定の現在値で計算されます。</p>
                           <Table>
                             <TableHeader>
                               <TableRow>
@@ -1565,7 +1825,7 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                           </Table>
                           <div className="mt-4">
                             <Button variant="outline" onClick={() => { createEstimateFromExtract(); setActiveTab('estimates'); }}>
-                              拾い結果から見積を作成（US-0601）
+                              拾い結果から見積を作成
                             </Button>
                           </div>
                         </>
@@ -1577,32 +1837,46 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                   {selectedEstimateId && selectedEstimate ? (
                     <Card className="border border-border">
                       <CardHeader className="flex flex-row items-center justify-between flex-wrap gap-2">
-                        <CardTitle>見積詳細（US-0602 / US-0603）</CardTitle>
-                        <div className="flex items-center gap-2">
-                          <Button variant="outline" size="sm" onClick={() => { setSelectedEstimateId(null); }}>一覧へ</Button>
-                          {selectedEstimate.status === 'draft' && (
+                        <CardTitle>見積詳細</CardTitle>
+                        <p className="text-sm text-muted-foreground mt-1">
+                          確定後も編集可能。見積番号は確定時に付番（EST-YYYYMM-####）。見積期限は設けません。
+                          {estimateDetailDirty && <span className="text-amber-600 font-medium"> 未保存の変更があります。保存またはキャンセルを選んでください。</span>}
+                        </p>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <Button variant="outline" size="sm" onClick={goBackToList}>一覧へ</Button>
+                          {(selectedEstimate.status === 'draft' || selectedEstimate.status === 'confirmed') && (
                             <>
                               <Button variant="outline" size="sm" onClick={() => saveEstimate(selectedEstimate)}>保存</Button>
-                              <Button size="sm" onClick={() => confirmEstimate(selectedEstimate)}><CheckCircle className="w-4 h-4 mr-1" />確定</Button>
-                              <Button variant="outline" size="sm" onClick={() => { setEstimateToCancel(selectedEstimate); setCancelDialogOpen(true); }}><XCircle className="w-4 h-4 mr-1" />取消</Button>
+                              {estimateDetailDirty && (
+                                <Button variant="outline" size="sm" onClick={discardEstimateDetailEdits}>キャンセル（編集を破棄）</Button>
+                              )}
+                              {selectedEstimate.status === 'draft' && (
+                                <>
+                                  <Button size="sm" onClick={() => confirmEstimate(selectedEstimate)}><CheckCircle className="w-4 h-4 mr-1" />確定</Button>
+                                  <Button variant="outline" size="sm" onClick={() => { setEstimateToCancel(selectedEstimate); setCancelDialogOpen(true); }}><XCircle className="w-4 h-4 mr-1" />取消</Button>
+                                </>
+                              )}
                             </>
                           )}
-                          {(selectedEstimate.status === 'confirmed' || selectedEstimate.status === 'cancelled') && (
+                          {selectedEstimate.status === 'confirmed' && (
                             <>
-                              <Button variant="outline" size="sm" onClick={() => duplicateEstimate(selectedEstimate)}><Copy className="w-4 h-4 mr-1" />複製</Button>
+                              <Button variant="outline" size="sm" onClick={() => duplicateEstimate(selectedEstimate)}><Copy className="w-4 h-4 mr-1" />複製（改版）</Button>
                               <Button variant="outline" size="sm" onClick={() => exportEstimateExcel(selectedEstimate)}><Download className="w-4 h-4 mr-1" />Excel出力</Button>
                             </>
+                          )}
+                          {selectedEstimate.status === 'cancelled' && (
+                            <Button variant="outline" size="sm" disabled title="取消のためExcel出力はできません">Excel出力（制限中）</Button>
                           )}
                         </div>
                       </CardHeader>
                       <CardContent className="space-y-4">
                         <div className="grid gap-2 sm:grid-cols-2">
                           <div>
-                            <Label>顧客（US-0603）</Label>
+                            <Label>顧客</Label>
                             <Select
                               value={selectedEstimate.customerId}
                               onValueChange={(v) => updateEstimateHeader(selectedEstimate.id, 'customerId', v)}
-                              disabled={selectedEstimate.status !== 'draft'}
+                              disabled={selectedEstimate.status === 'cancelled'}
                             >
                               <SelectTrigger><SelectValue placeholder="顧客を選択" /></SelectTrigger>
                               <SelectContent>
@@ -1617,13 +1891,14 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                             <Input
                               value={selectedEstimate.projectName}
                               onChange={(e) => updateEstimateHeader(selectedEstimate.id, 'projectName', e.target.value)}
-                              disabled={selectedEstimate.status !== 'draft'}
+                              disabled={selectedEstimate.status === 'cancelled'}
                               placeholder="案件名を入力"
                             />
                           </div>
                         </div>
-                        {selectedEstimate.estimateNumber && <p className="text-sm text-muted-foreground">見積番号: {selectedEstimate.estimateNumber}</p>}
+                        {selectedEstimate.estimateNumber && <p className="text-sm text-muted-foreground">見積番号: {selectedEstimate.estimateNumber}（見積期限は設けません）</p>}
                         {selectedEstimate.status !== 'draft' && <Badge variant={selectedEstimate.status === 'confirmed' ? 'default' : 'destructive'}>{selectedEstimate.status === 'confirmed' ? '確定' : '取消'}</Badge>}
+                        <p className="text-xs text-muted-foreground">見積書の直接送付は行わないためメール送信機能はありません。</p>
                         <div>
                           <Label>明細（品目/数量/単位/単価/金額）</Label>
                           <Table className="mt-1">
@@ -1635,7 +1910,7 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                                 <TableHead className="text-right w-28">単価</TableHead>
                                 <TableHead className="text-right w-28">金額</TableHead>
                                 <TableHead className="w-20">単価元</TableHead>
-                                {selectedEstimate.status === 'draft' && <TableHead className="w-12" />}
+                                {selectedEstimate.status !== 'cancelled' && <TableHead className="w-12" />}
                               </TableRow>
                             </TableHeader>
                             <TableBody>
@@ -1645,7 +1920,7 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                                     <Input
                                       value={li.item}
                                       onChange={(e) => updateEstimateLineItem(selectedEstimate.id, li.id, 'item', e.target.value)}
-                                      disabled={selectedEstimate.status !== 'draft'}
+                                      disabled={selectedEstimate.status === 'cancelled'}
                                       className="h-8"
                                     />
                                   </TableCell>
@@ -1656,14 +1931,14 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                                       className="h-8 w-24 text-right"
                                       value={li.quantity}
                                       onChange={(e) => updateEstimateLineItem(selectedEstimate.id, li.id, 'quantity', e.target.value)}
-                                      disabled={selectedEstimate.status !== 'draft'}
+                                      disabled={selectedEstimate.status === 'cancelled'}
                                     />
                                   </TableCell>
                                   <TableCell>
                                     <Input
                                       value={li.unit}
                                       onChange={(e) => updateEstimateLineItem(selectedEstimate.id, li.id, 'unit', e.target.value)}
-                                      disabled={selectedEstimate.status !== 'draft'}
+                                      disabled={selectedEstimate.status === 'cancelled'}
                                       className="h-8 w-20"
                                     />
                                   </TableCell>
@@ -1674,12 +1949,12 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                                       className="h-8 w-28 text-right"
                                       value={li.unitPrice}
                                       onChange={(e) => updateEstimateLineItem(selectedEstimate.id, li.id, 'unitPrice', e.target.value)}
-                                      disabled={selectedEstimate.status !== 'draft'}
+                                      disabled={selectedEstimate.status === 'cancelled'}
                                     />
                                   </TableCell>
                                   <TableCell className="text-right font-medium">¥{li.amount.toLocaleString()}</TableCell>
                                   <TableCell>{li.unitPriceSource === 'ai' ? <Badge variant="secondary">AI算出</Badge> : <span className="text-muted-foreground text-xs">マスタ</span>}</TableCell>
-                                  {selectedEstimate.status === 'draft' && (
+                                  {selectedEstimate.status !== 'cancelled' && (
                                     <TableCell>
                                       <Button variant="ghost" size="sm" className="h-8 w-8 p-0 text-destructive" onClick={() => removeEstimateRow(selectedEstimate.id, li.id)}><Trash2 className="w-4 h-4" /></Button>
                                     </TableCell>
@@ -1688,7 +1963,7 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                               ))}
                             </TableBody>
                           </Table>
-                          {selectedEstimate.status === 'draft' && (
+                          {selectedEstimate.status !== 'cancelled' && (
                             <Button variant="outline" size="sm" className="mt-2" onClick={() => addEstimateRow(selectedEstimate.id)}><Plus className="w-4 h-4 mr-1" />行追加</Button>
                           )}
                         </div>
@@ -1709,7 +1984,7 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                     <>
                       <Card className="border border-border">
                         <CardHeader>
-                          <CardTitle>見積一覧・検索（US-0608）</CardTitle>
+                          <CardTitle>見積一覧・検索</CardTitle>
                           <div className="flex flex-wrap items-center gap-4 mt-4">
                             <div className="relative flex-1 min-w-[140px] max-w-xs">
                               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -1787,6 +2062,23 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                       <AlertDialogFooter>
                         <AlertDialogCancel onClick={() => { setCancelDialogOpen(false); setEstimateToCancel(null); setCancelReason(''); }}>キャンセル</AlertDialogCancel>
                         <AlertDialogAction onClick={() => estimateToCancel && doCancelEstimate(estimateToCancel, cancelReason)} disabled={!cancelReason.trim()}>取消する</AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                  <AlertDialog open={estimateBackConfirmOpen} onOpenChange={setEstimateBackConfirmOpen}>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>変更が保存されていません</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          編集内容が保存されていません。保存してから一覧へ戻りますか？ 破棄すると編集は元に戻ります。
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel onClick={() => setEstimateBackConfirmOpen(false)}>編集を続ける</AlertDialogCancel>
+                        <AlertDialogAction onClick={handleEstimateBackDiscardAndGo} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+                          破棄して一覧へ
+                        </AlertDialogAction>
+                        <AlertDialogAction onClick={handleEstimateBackSaveAndGo}>保存して一覧へ</AlertDialogAction>
                       </AlertDialogFooter>
                     </AlertDialogContent>
                   </AlertDialog>

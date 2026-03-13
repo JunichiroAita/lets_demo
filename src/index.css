@@ -21,13 +21,13 @@
   --accent-foreground: #172B4D;
   --destructive: #DE350B;
   --destructive-foreground: #FFFFFF;
-  --border: #DFE1E6;
-  --input: transparent;
+  --border: #9CA3AF;
+  --input: #9CA3AF;
   --input-background: #FFFFFF;
   --switch-background: #cbced4;
   --font-weight-medium: 500;
   --font-weight-normal: 400;
-  --ring: #0052CC;
+  --ring: #9CA3AF;
   --success: #36B37E;
   --warning: #FFAB00;
   --danger: #DE350B;
@@ -40,8 +40,8 @@
   --sidebar-primary-foreground: #FFFFFF;
   --sidebar-accent: #F4F5F7;
   --sidebar-accent-foreground: #172B4D;
-  --sidebar-border: #DFE1E6;
-  --sidebar-ring: #0052CC;
+  --sidebar-border: #9CA3AF;
+  --sidebar-ring: #9CA3AF;
 }
 
 @theme inline {

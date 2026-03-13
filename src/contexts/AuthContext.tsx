@@ -184,7 +184,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => clearInterval(t);
   }, []);
 
-  // US-0003: 有効期限が近いとき延長／期限切れならログアウト
+  // 有効期限が近いとき延長／期限切れならログアウト
   useEffect(() => {
     if (!session) return;
     const now = Date.now();

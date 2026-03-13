@@ -6,10 +6,12 @@ import { Badge } from './ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from './ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from './ui/alert-dialog';
 import { ArrowLeft, Package, History, TrendingDown, X, Plus, Pencil, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
+import { useAudit } from '../contexts/AuditContext';
+import { useAuth } from '../contexts/AuthContext';
 import type { CustomerRecord } from './Customer';
 
 interface Material {
@@ -50,6 +52,10 @@ const SupplierDetail: React.FC<SupplierDetailProps> = ({
   onBack,
   onOrderClick,
 }) => {
+  const { log: auditLog } = useAudit();
+  const { session } = useAuth();
+  const userId = session?.user?.id ?? '';
+
   const [selectedMaterial, setSelectedMaterial] = useState<string>('all');
   const [dateFrom, setDateFrom] = useState<string>('');
   const [dateTo, setDateTo] = useState<string>('');
@@ -80,24 +86,36 @@ const SupplierDetail: React.FC<SupplierDetailProps> = ({
           : c
       )
     );
+    auditLog({ userId, action: '材料紐づけ追加', targetId: supplier.id, result: 'success' });
     toast.success('材料を紐づけました');
     setAddMaterialOpen(false);
     setSelectedMaterialIdToAdd('');
   };
 
+  /** 1品目につき優先は1社のみ。この仕入先で優先にしたら他社の同品目は優先解除 */
   const updatePreferred = (materialId: string, isPreferred: boolean) => {
     setCustomers((prev) =>
-      prev.map((c) =>
-        c.id === supplier.id
-          ? {
-              ...c,
-              supplierMaterials: (c.supplierMaterials ?? []).map((sm) =>
-                sm.materialId === materialId ? { ...sm, isPreferred } : sm
-              ),
-            }
-          : c
-      )
+      prev.map((c) => {
+        if (c.id === supplier.id) {
+          return {
+            ...c,
+            supplierMaterials: (c.supplierMaterials ?? []).map((sm) =>
+              sm.materialId === materialId ? { ...sm, isPreferred } : sm
+            ),
+          };
+        }
+        if (isPreferred) {
+          return {
+            ...c,
+            supplierMaterials: (c.supplierMaterials ?? []).map((sm) =>
+              sm.materialId === materialId ? { ...sm, isPreferred: false } : sm
+            ),
+          };
+        }
+        return c;
+      })
     );
+    auditLog({ userId, action: '材料紐づけ編集（優先フラグ）', targetId: supplier.id, result: 'success' });
     toast.success('優先仕入先フラグを更新しました');
   };
 
@@ -114,6 +132,7 @@ const SupplierDetail: React.FC<SupplierDetailProps> = ({
           : c
       )
     );
+    auditLog({ userId, action: '材料紐づけ削除', targetId: supplier.id, result: 'success' });
     toast.success('紐づけを削除しました');
     setDeleteConfirm(null);
   };
@@ -206,8 +225,8 @@ const SupplierDetail: React.FC<SupplierDetailProps> = ({
                 <div className="text-sm mt-1">{supplier.companyName}</div>
               </div>
               <div>
-                <Label className="text-sm text-muted-foreground">担当者名</Label>
-                <div className="text-sm mt-1">{supplier.contactPerson || '-'}</div>
+                <Label className="text-sm text-muted-foreground">担当者</Label>
+                <div className="text-sm mt-1">{supplier.contactPersons?.length ? supplier.contactPersons.join('、') : supplier.contactPerson || '-'}</div>
               </div>
               <div>
                 <Label className="text-sm text-muted-foreground">電話番号</Label>
@@ -232,7 +251,7 @@ const SupplierDetail: React.FC<SupplierDetailProps> = ({
         <div className="flex items-center justify-between pb-2 border-b-2 border-border">
           <div className="flex items-center space-x-2">
             <Package className="w-5 h-5 text-primary" />
-            <h2 className="text-base font-semibold">取扱材料（US-1004）</h2>
+            <h2 className="text-base font-semibold">取扱材料</h2>
           </div>
           <Button variant="outline" size="sm" onClick={() => setAddMaterialOpen(true)}>
             <Plus className="w-4 h-4 mr-1" />材料を追加
@@ -292,10 +311,11 @@ const SupplierDetail: React.FC<SupplierDetailProps> = ({
       <Dialog open={addMaterialOpen} onOpenChange={setAddMaterialOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>材料を追加（US-0306）</DialogTitle>
+            <DialogTitle>材料を追加（取扱材料）</DialogTitle>
+            <DialogDescription>材料価格マスタの品目を選択して紐づけを登録します。1仕入先に複数品目を登録でき、品目ごとに「優先仕入先」を設定できます（1品目につき優先は1社のみ）。</DialogDescription>
           </DialogHeader>
           <div className="py-4">
-            <Label>材料マスタから品目を選択</Label>
+            <Label>材料価格マスタから品目を選択</Label>
             <Select value={selectedMaterialIdToAdd} onValueChange={setSelectedMaterialIdToAdd}>
               <SelectTrigger className="mt-2">
                 <SelectValue placeholder="選択..." />
@@ -334,6 +354,7 @@ const SupplierDetail: React.FC<SupplierDetailProps> = ({
           <History className="w-5 h-5 text-primary" />
           <h2 className="text-base font-semibold">発注履歴</h2>
         </div>
+        <p className="text-sm text-muted-foreground">行をクリックすると発注詳細画面へ遷移します。</p>
         <Card>
           <CardContent className="p-0">
             {supplierOrders.length > 0 ? (

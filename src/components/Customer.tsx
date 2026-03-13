@@ -8,28 +8,28 @@ import { Textarea } from './ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Badge } from './ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from './ui/dialog';
-import { Plus, Edit, Search, Users, Truck, Filter, Archive, ArchiveRestore, Eye } from 'lucide-react';
+import { Plus, Edit, Search, Users, Truck, Filter, Archive, ArchiveRestore, Eye, X } from 'lucide-react';
 import { toast } from 'sonner';
 import SupplierDetail from './SupplierDetail';
 import { useAudit } from '../contexts/AuditContext';
 import { useAuth } from '../contexts/AuthContext';
 
-/** 顧客・仕入先（F-21）US-1001: 種別・名称・住所(任意)・担当者(任意)。顧客のみ請求日。仕入先はリードタイム・評価・信頼度は管理対象外。 */
+/** 顧客・仕入先：種別・名称・住所(任意)・担当者(任意・複数可)。顧客のみ請求日。仕入先はリードタイム・評価・信頼度は管理対象外。 */
 export interface CustomerRecord {
   id: string;
   companyName: string;
+  /** 先頭担当者（後方互換・contactPersons[0]と同期） */
   contactPerson: string;
+  /** 複数担当者（任意・複数登録可能） */
+  contactPersons?: string[];
   email: string;
   phone: string;
   address?: string;
   memo?: string;
   createdAt: string;
   type: 'customer' | 'supplier';
-  /** 顧客のみ。請求日（数字）。月末は99を入力 */
+  /** 顧客のみ。請求日（数字自由入力）。月末は99を入力 */
   billingDay?: number;
-  rating?: number;
-  reliability?: number;
-  leadTime?: string;
   supplierMaterials?: Array<{ materialId: string; materialName: string; defaultUnitPrice?: number; unit?: string; isPreferred?: boolean; memo?: string }>;
   isActive: boolean;
 }
@@ -89,7 +89,7 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
 
   const [formData, setFormData] = useState({
     companyName: '',
-    contactPerson: '',
+    contactPersons: [] as string[],
     email: '',
     phone: '',
     address: '',
@@ -106,19 +106,20 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
       const matchesStatus = statusFilter === 'all' ||
         (statusFilter === 'active' && customer.isActive) ||
         (statusFilter === 'inactive' && !customer.isActive);
+      const contactAll = [customer.contactPerson, ...(customer.contactPersons ?? [])].filter(Boolean).join(' ').toLowerCase();
       const matchesSearch = !term ||
         customer.companyName.toLowerCase().includes(term) ||
-        (customer.contactPerson?.toLowerCase() || '').includes(term) ||
+        contactAll.includes(term) ||
         (customer.email?.toLowerCase() || '').includes(term) ||
         (customer.phone?.toLowerCase() || '').includes(term) ||
         (customer.address?.toLowerCase() || '').includes(term) ||
         (customer.memo?.toLowerCase() || '').includes(term);
-      // US-1003: キーワードは名称・担当者・連絡先で絞込（上記で対応）
+      // キーワードは名称・担当者・連絡先で絞込
       return matchesType && matchesStatus && matchesSearch;
     });
     list = [...list].sort((a, b) => {
-      const aVal = a[sortKey] ?? '';
-      const bVal = b[sortKey] ?? '';
+      const aVal = sortKey === 'contactPerson' ? (a.contactPersons?.length ? a.contactPersons[0] : a.contactPerson) ?? '' : a[sortKey] ?? '';
+      const bVal = sortKey === 'contactPerson' ? (b.contactPersons?.length ? b.contactPersons[0] : b.contactPerson) ?? '' : b[sortKey] ?? '';
       if (sortKey === 'createdAt') {
         const cmp = String(aVal).localeCompare(String(bVal));
         return sortDir === 'asc' ? cmp : -cmp;
@@ -133,7 +134,7 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
     setEditingCustomer(null);
     setFormData({
       companyName: '',
-      contactPerson: '',
+      contactPersons: [],
       email: '',
       phone: '',
       address: '',
@@ -147,9 +148,12 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
 
   const openEditDialog = (customer: CustomerRecord) => {
     setEditingCustomer(customer);
+    const persons = customer.contactPersons?.length
+      ? customer.contactPersons
+      : customer.contactPerson ? [customer.contactPerson] : [];
     setFormData({
       companyName: customer.companyName,
-      contactPerson: customer.contactPerson || '',
+      contactPersons: persons,
       email: customer.email || '',
       phone: customer.phone || '',
       address: customer.address || '',
@@ -167,13 +171,17 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
       return;
     }
 
+    const contactPersons = formData.contactPersons.filter((p) => p.trim());
+    const contactPerson = contactPersons[0] ?? '';
+
     if (editingCustomer) {
       setCustomers(prev => prev.map(c =>
         c.id === editingCustomer.id
           ? {
               ...c,
               companyName: formData.companyName,
-              contactPerson: formData.contactPerson || '',
+              contactPerson,
+              contactPersons: contactPersons.length ? contactPersons : undefined,
               email: formData.email || '',
               phone: formData.phone || '',
               address: formData.address,
@@ -191,7 +199,8 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
       const newCustomer: CustomerRecord = {
         id: newId,
         companyName: formData.companyName,
-        contactPerson: formData.contactPerson || '',
+        contactPerson,
+        contactPersons: contactPersons.length ? contactPersons : undefined,
         email: formData.email || '',
         phone: formData.phone || '',
         address: formData.address,
@@ -236,8 +245,8 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
         <div className="p-6 max-w-screen-2xl mx-auto space-y-6">
           <div className="flex items-start justify-between">
             <div className="space-y-1">
-              <h1 className="text-2xl font-semibold tracking-tight">顧客・仕入先（F-21）</h1>
-              <p className="text-muted-foreground">顧客と仕入先の登録・編集・検索。仕入先は購買で選択できます。</p>
+              <h1 className="text-2xl font-semibold tracking-tight">顧客・仕入先</h1>
+              <p className="text-muted-foreground">顧客・仕入先の登録・編集・無効化・検索。一覧は顧客・仕入先両方表示。キーワードは名称・担当者・連絡先で絞り込み。仕入先は購買で選択できます。</p>
             </div>
           </div>
 
@@ -327,9 +336,10 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
                 <TableBody>
                   {filteredAndSortedCustomers.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={9} className="text-center py-12">
-                        <Users className="w-12 h-12 mx-auto opacity-20 mb-2 text-muted-foreground" />
-                        <p className="text-muted-foreground">条件に一致するデータが見つかりません</p>
+                      <TableCell colSpan={9} className="text-center py-12 text-muted-foreground">
+                        <Users className="w-12 h-12 mx-auto opacity-20 mb-2" />
+                        <p>条件に一致する顧客・仕入先がありません</p>
+                        <p className="text-sm mt-1">種別フィルタやキーワードを変えるか、新規登録してください。</p>
                       </TableCell>
                     </TableRow>
                   ) : (
@@ -347,7 +357,7 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
                           </Badge>
                         </TableCell>
                         <TableCell className="font-medium">{customer.companyName}</TableCell>
-                        <TableCell className="text-sm">{customer.contactPerson || '-'}</TableCell>
+                        <TableCell className="text-sm">{(customer.contactPersons?.length ? customer.contactPersons.join('、') : customer.contactPerson) || '-'}</TableCell>
                         <TableCell className="text-sm">{customer.email || '-'}</TableCell>
                         <TableCell className="text-sm">{customer.phone || '-'}</TableCell>
                         <TableCell className="text-sm">{customer.createdAt}</TableCell>
@@ -390,7 +400,7 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
             <DialogContent className="max-w-2xl">
               <DialogHeader>
                 <DialogTitle>{editingCustomer ? `${formData.type === 'customer' ? '顧客' : '仕入先'}を編集` : '新規登録'}</DialogTitle>
-                <DialogDescription>種別・名称（必須）・住所・担当者は任意。顧客は請求日を登録できます。</DialogDescription>
+                <DialogDescription>種別・名称（必須）・住所（任意）・担当者（任意・複数登録可能）。顧客は請求日を登録できます。仕入先のリードタイム・評価・信頼度は管理対象外です。</DialogDescription>
               </DialogHeader>
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
@@ -408,9 +418,44 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
                     <Label htmlFor="companyName">名称 *</Label>
                     <Input id="companyName" value={formData.companyName} onChange={(e) => setFormData({ ...formData, companyName: e.target.value })} placeholder="例：株式会社〇〇" />
                   </div>
-                  <div>
-                    <Label htmlFor="contactPerson">担当者（任意）</Label>
-                    <Input id="contactPerson" value={formData.contactPerson} onChange={(e) => setFormData({ ...formData, contactPerson: e.target.value })} placeholder="例：山田太郎" />
+                  <div className="col-span-2">
+                    <Label>担当者（任意・複数登録可能）</Label>
+                    <div className="space-y-2 mt-1">
+                      {formData.contactPersons.map((name, idx) => (
+                        <div key={idx} className="flex gap-2">
+                          <Input
+                            value={name}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                contactPersons: formData.contactPersons.map((p, i) => (i === idx ? e.target.value : p)),
+                              })
+                            }
+                            placeholder="担当者名"
+                            className="flex-1"
+                          />
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-9 w-9 p-0 text-destructive shrink-0"
+                            onClick={() =>
+                              setFormData({ ...formData, contactPersons: formData.contactPersons.filter((_, i) => i !== idx) })
+                            }
+                          >
+                            <X className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      ))}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setFormData({ ...formData, contactPersons: [...formData.contactPersons, ''] })}
+                      >
+                        <Plus className="w-4 h-4 mr-1" />担当者を追加
+                      </Button>
+                    </div>
                   </div>
                   <div>
                     <Label htmlFor="address">住所（任意）</Label>
@@ -426,7 +471,7 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
                   </div>
                   {formData.type === 'customer' && (
                     <div className="col-span-2">
-                      <Label htmlFor="billingDay">請求日（任意・数字）</Label>
+                      <Label htmlFor="billingDay">請求日（締め日・請求書の初期表示に使用）</Label>
                       <Input
                         id="billingDay"
                         type="number"
@@ -434,9 +479,9 @@ const Customer: React.FC<CustomerProps> = ({ customers, setCustomers, materials,
                         max={99}
                         value={formData.billingDay ?? ''}
                         onChange={(e) => setFormData({ ...formData, billingDay: e.target.value ? parseInt(e.target.value, 10) : undefined })}
-                        placeholder="例：20"
+                        placeholder="例：20（20日締め）、99（月末締め）"
                       />
-                      <p className="text-xs text-muted-foreground mt-1">※月末締めの場合は99を入力</p>
+                      <p className="text-xs text-muted-foreground mt-1">20日締め・月末締め等。月末は99、その他は締め日を数字で入力。請求作成時に宛先の請求日として初期表示されます（編集可）。</p>
                     </div>
                   )}
                   <div className="col-span-2">

@@ -8,18 +8,20 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '.
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
 import { Badge } from './ui/badge';
-import { Settings2, Package, TrendingUp, Users, UserCheck, Plus, Edit, Search, History, ScrollText } from 'lucide-react';
+import { Settings2, Package, TrendingUp, UserCheck, Plus, Edit, Search, History, ScrollText } from 'lucide-react';
 import { toast } from 'sonner';
 import type { MaterialRecord } from '../App';
-import { getLoginHistory } from '../contexts/AuthContext';
+import { getLoginHistory, useAuth } from '../contexts/AuthContext';
 import { useAudit } from '../contexts/AuditContext';
 
 interface SystemSettingsProps {
   materials?: MaterialRecord[];
   setMaterials?: React.Dispatch<React.SetStateAction<MaterialRecord[]>>;
+  employees?: EmployeeRecord[];
+  setEmployees?: React.Dispatch<React.SetStateAction<EmployeeRecord[]>>;
 }
 
-// 基本設定（US-0301, US-0302: 税率・税端数・休憩既定）
+// 基本設定（税率・税端数・休憩既定）
 interface BasicSettings {
   companyName: string;
   postalCode: string;
@@ -36,7 +38,7 @@ interface BasicSettings {
   break3End: string;
 }
 
-// 標準歩掛（US-0303: 係数・有効フラグ）
+// 標準歩掛（係数・有効フラグ）
 interface StandardRate {
   id: string;
   name: string;
@@ -47,23 +49,15 @@ interface StandardRate {
   isActive?: boolean;
 }
 
-// ユーザー
-interface UserRecord {
+// 従業員（ログイン可能。退職時は isActive=false でシステムログイン不可）
+export interface EmployeeRecord {
   id: string;
-  loginId: string;
-  displayName: string;
-  role: string;
-  email: string;
-  isActive: boolean;
-}
-
-// 従業員
-interface EmployeeRecord {
-  id: string;
+  employeeNumber: number; // 1から順に自動採番（編集不可）
   name: string;
-  code: string;
-  department: string;
-  hireDate: string;
+  loginId: string;
+  role: string;
+  position?: string;   // 役職（未入力可）
+  hireDate?: string;   // 入社日（未入力可）
   isActive: boolean;
 }
 
@@ -88,19 +82,16 @@ const initialRates: StandardRate[] = [
   { id: 'R2', name: '石膏ボード張り', unit: 'm2', rate: 1800, coefficient: 1, category: '内装', isActive: true },
 ];
 
-const initialUsers: UserRecord[] = [
-  { id: 'U1', loginId: 'admin', displayName: '管理者', role: 'admin', email: 'admin@example.com', isActive: true },
-  { id: 'U2', loginId: 'user1', displayName: '一般ユーザー', role: 'user', email: 'user@example.com', isActive: true },
-];
-
 const initialEmployees: EmployeeRecord[] = [
-  { id: 'E1', name: '山田太郎', code: 'EMP001', department: '施工課', hireDate: '2022-04-01', isActive: true },
-  { id: 'E2', name: '佐藤花子', code: 'EMP002', department: '設計課', hireDate: '2023-06-01', isActive: true },
+  { id: 'E1', employeeNumber: 1, name: '管理者', loginId: 'admin', role: 'owner', isActive: true },
+  { id: 'E2', employeeNumber: 2, name: '現場', loginId: 'field1', role: 'field', isActive: true },
 ];
 
-const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMaterials }) => {
-  const { getLogs: getAuditLogs } = useAudit();
-  const [activeTab, setActiveTab] = useState<'basic' | 'materials' | 'rates' | 'users' | 'employees' | 'login-history' | 'audit-log'>('basic');
+const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMaterials, employees: propEmployees, setEmployees: setPropEmployees }) => {
+  const { getLogs: getAuditLogs, log: auditLog } = useAudit();
+  const { session } = useAuth();
+  const userId = session?.user?.id ?? '';
+  const [activeTab, setActiveTab] = useState<'basic' | 'materials' | 'rates' | 'employees' | 'login-history' | 'audit-log'>('basic');
 
   // 基本設定（localStorage に保存する想定）
   const [basicSettings, setBasicSettings] = useState<BasicSettings>(() => {
@@ -112,8 +103,8 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
   });
 
   const [rates, setRates] = useState<StandardRate[]>(initialRates);
-  const [users, setUsers] = useState<UserRecord[]>(initialUsers);
-  const [employees, setEmployees] = useState<EmployeeRecord[]>(initialEmployees);
+  const employees = propEmployees ?? [];
+  const setEmployees = setPropEmployees ?? (() => {});
 
   // 材料ダイアログ
   const [materialDialogOpen, setMaterialDialogOpen] = useState(false);
@@ -127,16 +118,10 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
   const [rateForm, setRateForm] = useState({ name: '', unit: 'm2', rate: 0, coefficient: 1, category: 'その他', isActive: true });
   const [rateSearch, setRateSearch] = useState('');
 
-  // ユーザーダイアログ
-  const [userDialogOpen, setUserDialogOpen] = useState(false);
-  const [editingUser, setEditingUser] = useState<UserRecord | null>(null);
-  const [userForm, setUserForm] = useState({ loginId: '', displayName: '', role: 'user', email: '', isActive: true });
-  const [userSearch, setUserSearch] = useState('');
-
   // 従業員ダイアログ
   const [employeeDialogOpen, setEmployeeDialogOpen] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState<EmployeeRecord | null>(null);
-  const [employeeForm, setEmployeeForm] = useState({ name: '', code: '', department: '', hireDate: '', isActive: true });
+  const [employeeForm, setEmployeeForm] = useState({ name: '', loginId: '', role: 'field', position: '', hireDate: '', isActive: true });
   const [employeeSearch, setEmployeeSearch] = useState('');
 
   const saveBasicSettings = () => {
@@ -165,25 +150,14 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
     return rates.filter((r) => r.name.toLowerCase().includes(q) || (r.category || '').toLowerCase().includes(q));
   }, [rates, rateSearch]);
 
-  const filteredUsers = useMemo(() => {
-    if (!userSearch.trim()) return users;
-    const q = userSearch.toLowerCase();
-    return users.filter(
-      (u) =>
-        u.loginId.toLowerCase().includes(q) ||
-        u.displayName.toLowerCase().includes(q) ||
-        (u.email || '').toLowerCase().includes(q)
-    );
-  }, [users, userSearch]);
-
   const filteredEmployees = useMemo(() => {
     if (!employeeSearch.trim()) return employees;
     const q = employeeSearch.toLowerCase();
     return employees.filter(
       (e) =>
         e.name.toLowerCase().includes(q) ||
-        (e.code || '').toLowerCase().includes(q) ||
-        (e.department || '').toLowerCase().includes(q)
+        (e.loginId || '').toLowerCase().includes(q) ||
+        (e.position || '').toLowerCase().includes(q)
     );
   }, [employees, employeeSearch]);
 
@@ -297,62 +271,15 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
             : x
         )
       );
+      auditLog({ userId, action: '標準歩掛更新', targetId: editingRate.id, result: 'success' });
       toast.success('標準歩掛を更新しました');
     } else {
       const id = 'R' + (Math.max(0, ...rates.map((r) => parseInt(r.id.replace(/\D/g, '') || '0', 10))) + 1);
       setRates((prev) => [...prev, { id, name: rateForm.name.trim(), unit: rateForm.unit, rate: rateNum, coefficient: coef, category: rateForm.category, isActive: rateForm.isActive !== false }]);
+      auditLog({ userId, action: '標準歩掛追加', targetId: id, result: 'success' });
       toast.success('標準歩掛を追加しました');
     }
     setRateDialogOpen(false);
-  };
-
-  const openUserDialog = (u?: UserRecord) => {
-    if (u) {
-      setEditingUser(u);
-      setUserForm({
-        loginId: u.loginId,
-        displayName: u.displayName,
-        role: u.role,
-        email: u.email,
-        isActive: u.isActive,
-      });
-    } else {
-      setEditingUser(null);
-      setUserForm({ loginId: '', displayName: '', role: 'user', email: '', isActive: true });
-    }
-    setUserDialogOpen(true);
-  };
-
-  const saveUser = () => {
-    if (!userForm.loginId.trim() || !userForm.displayName.trim()) {
-      toast.error('ログインIDと表示名を入力してください');
-      return;
-    }
-    if (editingUser) {
-      setUsers((prev) =>
-        prev.map((x) =>
-          x.id === editingUser.id
-            ? { ...x, loginId: userForm.loginId.trim(), displayName: userForm.displayName.trim(), role: userForm.role, email: userForm.email, isActive: userForm.isActive }
-            : x
-        )
-      );
-      toast.success('ユーザーを更新しました');
-    } else {
-      const id = 'U' + (Math.max(0, ...users.map((u) => parseInt(u.id.replace(/\D/g, '') || '0', 10))) + 1);
-      setUsers((prev) => [
-        ...prev,
-        {
-          id,
-          loginId: userForm.loginId.trim(),
-          displayName: userForm.displayName.trim(),
-          role: userForm.role,
-          email: userForm.email,
-          isActive: userForm.isActive,
-        },
-      ]);
-      toast.success('ユーザーを追加しました');
-    }
-    setUserDialogOpen(false);
   };
 
   const openEmployeeDialog = (e?: EmployeeRecord) => {
@@ -360,14 +287,15 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
       setEditingEmployee(e);
       setEmployeeForm({
         name: e.name,
-        code: e.code,
-        department: e.department,
-        hireDate: e.hireDate,
+        loginId: e.loginId,
+        role: e.role,
+        position: e.position ?? '',
+        hireDate: e.hireDate ?? '',
         isActive: e.isActive,
       });
     } else {
       setEditingEmployee(null);
-      setEmployeeForm({ name: '', code: '', department: '', hireDate: '', isActive: true });
+      setEmployeeForm({ name: '', loginId: '', role: 'field', position: '', hireDate: '', isActive: true });
     }
     setEmployeeDialogOpen(true);
   };
@@ -377,6 +305,10 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
       toast.error('氏名を入力してください');
       return;
     }
+    if (!employeeForm.loginId.trim()) {
+      toast.error('ログインIDを入力してください');
+      return;
+    }
     if (editingEmployee) {
       setEmployees((prev) =>
         prev.map((x) =>
@@ -384,9 +316,10 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
             ? {
                 ...x,
                 name: employeeForm.name.trim(),
-                code: employeeForm.code,
-                department: employeeForm.department,
-                hireDate: employeeForm.hireDate,
+                loginId: employeeForm.loginId.trim(),
+                role: employeeForm.role,
+                position: employeeForm.position.trim() || undefined,
+                hireDate: employeeForm.hireDate.trim() || undefined,
                 isActive: employeeForm.isActive,
               }
             : x
@@ -394,15 +327,18 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
       );
       toast.success('従業員を更新しました');
     } else {
+      const nextNum = employees.length === 0 ? 1 : Math.max(...employees.map((e) => e.employeeNumber), 0) + 1;
       const id = 'E' + (Math.max(0, ...employees.map((e) => parseInt(e.id.replace(/\D/g, '') || '0', 10))) + 1);
       setEmployees((prev) => [
         ...prev,
         {
           id,
+          employeeNumber: nextNum,
           name: employeeForm.name.trim(),
-          code: employeeForm.code,
-          department: employeeForm.department,
-          hireDate: employeeForm.hireDate,
+          loginId: employeeForm.loginId.trim(),
+          role: employeeForm.role,
+          position: employeeForm.position.trim() || undefined,
+          hireDate: employeeForm.hireDate.trim() || undefined,
           isActive: employeeForm.isActive,
         },
       ]);
@@ -475,16 +411,45 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
               </Select>
             </div>
           </div>
-          <div className="space-y-2">
-            <Label>基本休憩時間（デフォルト 10:00-10:30 / 12:00-13:00 / 15:00-15:30、合計2時間/日）</Label>
-            <div className="grid grid-cols-2 md:grid-cols-6 gap-2 text-sm">
-              <Input type="time" value={basicSettings.break1Start} onChange={(e) => setBasicSettings((s) => ({ ...s, break1Start: e.target.value }))} />
-              <Input type="time" value={basicSettings.break1End} onChange={(e) => setBasicSettings((s) => ({ ...s, break1End: e.target.value }))} />
-              <Input type="time" value={basicSettings.break2Start} onChange={(e) => setBasicSettings((s) => ({ ...s, break2Start: e.target.value }))} />
-              <Input type="time" value={basicSettings.break2End} onChange={(e) => setBasicSettings((s) => ({ ...s, break2End: e.target.value }))} />
-              <Input type="time" value={basicSettings.break3Start} onChange={(e) => setBasicSettings((s) => ({ ...s, break3Start: e.target.value }))} />
-              <Input type="time" value={basicSettings.break3End} onChange={(e) => setBasicSettings((s) => ({ ...s, break3End: e.target.value }))} />
+          <div className="space-y-3">
+            <Label className="text-base">基本休憩時間（1日のデフォルト）</Label>
+            <p className="text-sm text-muted-foreground">勤怠計算で使う休憩時間の既定値です。休憩1・2・3の「開始」と「終了」を設定してください。</p>
+            <div className="space-y-3 rounded-lg border p-3 bg-muted/30">
+              <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr_1fr] gap-2 items-end">
+                <span className="text-sm font-medium sm:pt-2">休憩1</span>
+                <div className="space-y-1">
+                  <span className="text-xs text-muted-foreground">開始</span>
+                  <Input type="time" value={basicSettings.break1Start} onChange={(e) => setBasicSettings((s) => ({ ...s, break1Start: e.target.value }))} />
+                </div>
+                <div className="space-y-1">
+                  <span className="text-xs text-muted-foreground">終了</span>
+                  <Input type="time" value={basicSettings.break1End} onChange={(e) => setBasicSettings((s) => ({ ...s, break1End: e.target.value }))} />
+                </div>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr_1fr] gap-2 items-end">
+                <span className="text-sm font-medium sm:pt-2">休憩2</span>
+                <div className="space-y-1">
+                  <span className="text-xs text-muted-foreground">開始</span>
+                  <Input type="time" value={basicSettings.break2Start} onChange={(e) => setBasicSettings((s) => ({ ...s, break2Start: e.target.value }))} />
+                </div>
+                <div className="space-y-1">
+                  <span className="text-xs text-muted-foreground">終了</span>
+                  <Input type="time" value={basicSettings.break2End} onChange={(e) => setBasicSettings((s) => ({ ...s, break2End: e.target.value }))} />
+                </div>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr_1fr] gap-2 items-end">
+                <span className="text-sm font-medium sm:pt-2">休憩3</span>
+                <div className="space-y-1">
+                  <span className="text-xs text-muted-foreground">開始</span>
+                  <Input type="time" value={basicSettings.break3Start} onChange={(e) => setBasicSettings((s) => ({ ...s, break3Start: e.target.value }))} />
+                </div>
+                <div className="space-y-1">
+                  <span className="text-xs text-muted-foreground">終了</span>
+                  <Input type="time" value={basicSettings.break3End} onChange={(e) => setBasicSettings((s) => ({ ...s, break3End: e.target.value }))} />
+                </div>
+              </div>
             </div>
+            <p className="text-xs text-muted-foreground">例: 10:00～10:30 / 12:00～13:00 / 15:00～15:30（合計2時間/日）</p>
           </div>
           <div className="space-y-2">
             <Label>メモ</Label>
@@ -638,6 +603,7 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
 
   const renderRatesTab = () => (
     <div className="space-y-4">
+      <p className="text-sm text-muted-foreground">標準歩掛マスタ。品目/単位/係数/有効フラグ。単位未入力不可・係数は数値。有効な歩掛のみOCR算出に使用。変更は監査ログに残ります。</p>
       <div className="flex items-center justify-between gap-4">
         <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -652,7 +618,7 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>歩掛名</TableHead>
+              <TableHead>品目（歩掛名）</TableHead>
               <TableHead>カテゴリ</TableHead>
               <TableHead>単位</TableHead>
               <TableHead className="text-right">係数</TableHead>
@@ -685,10 +651,11 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>{editingRate ? '標準歩掛の編集' : '標準歩掛の追加'}</DialogTitle>
+            <p className="text-sm text-muted-foreground">単位は必須。係数は数値で入力。有効な歩掛のみOCR算出に使用されます。変更は監査ログに記録されます。</p>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label>歩掛名 *</Label>
+              <Label>品目（歩掛名） *</Label>
               <Input value={rateForm.name} onChange={(e) => setRateForm((f) => ({ ...f, name: e.target.value }))} placeholder="下地処理" />
             </div>
             <div className="grid grid-cols-2 gap-4">
@@ -706,7 +673,7 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>単位</Label>
+                <Label>単位 *</Label>
                 <Select value={rateForm.unit} onValueChange={(v) => setRateForm((f) => ({ ...f, unit: v }))}>
                   <SelectTrigger>
                     <SelectValue />
@@ -760,107 +727,12 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
     </div>
   );
 
-  const renderUsersTab = () => (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between gap-4">
-        <div className="relative flex-1 max-w-sm">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-          <Input placeholder="ログインID・表示名・メールで検索" value={userSearch} onChange={(e) => setUserSearch(e.target.value)} className="pl-8" />
-        </div>
-        <Button onClick={() => openUserDialog()}>
-          <Plus className="w-4 h-4 mr-2" />
-          新規追加
-        </Button>
-      </div>
-      <Card className="border border-border">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>ログインID</TableHead>
-              <TableHead>表示名</TableHead>
-              <TableHead>権限</TableHead>
-              <TableHead>メール</TableHead>
-              <TableHead>状態</TableHead>
-              <TableHead className="w-20" />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {filteredUsers.map((u) => (
-              <TableRow key={u.id}>
-                <TableCell className="font-mono">{u.loginId}</TableCell>
-                <TableCell>{u.displayName}</TableCell>
-                <TableCell>
-                  <Badge variant={u.role === 'admin' ? 'default' : 'secondary'}>{u.role === 'admin' ? '管理者' : '一般'}</Badge>
-                </TableCell>
-                <TableCell className="text-muted-foreground">{u.email || '-'}</TableCell>
-                <TableCell>{u.isActive ? <Badge variant="outline">有効</Badge> : <Badge variant="outline" className="text-muted-foreground">無効</Badge>}</TableCell>
-                <TableCell>
-                  <Button variant="ghost" size="sm" onClick={() => openUserDialog(u)}>
-                    <Edit className="w-4 h-4" />
-                  </Button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </Card>
-
-      <Dialog open={userDialogOpen} onOpenChange={setUserDialogOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>{editingUser ? 'ユーザーの編集' : 'ユーザーの追加'}</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label>ログインID *</Label>
-              <Input value={userForm.loginId} onChange={(e) => setUserForm((f) => ({ ...f, loginId: e.target.value }))} placeholder="user1" disabled={!!editingUser} />
-            </div>
-            <div className="space-y-2">
-              <Label>表示名 *</Label>
-              <Input value={userForm.displayName} onChange={(e) => setUserForm((f) => ({ ...f, displayName: e.target.value }))} placeholder="山田太郎" />
-            </div>
-            <div className="space-y-2">
-              <Label>権限</Label>
-              <Select value={userForm.role} onValueChange={(v) => setUserForm((f) => ({ ...f, role: v }))}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="admin">管理者</SelectItem>
-                  <SelectItem value="user">一般</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label>メール</Label>
-              <Input type="email" value={userForm.email} onChange={(e) => setUserForm((f) => ({ ...f, email: e.target.value }))} placeholder="user@example.com" />
-            </div>
-            <div className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                id="user-active"
-                checked={userForm.isActive}
-                onChange={(e) => setUserForm((f) => ({ ...f, isActive: e.target.checked }))}
-                className="rounded border-border"
-              />
-              <Label htmlFor="user-active">有効</Label>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setUserDialogOpen(false)}>キャンセル</Button>
-            <Button onClick={saveUser}>{editingUser ? '更新' : '追加'}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-
   const renderEmployeesTab = () => (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-4">
         <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-          <Input placeholder="氏名・コード・部署で検索" value={employeeSearch} onChange={(e) => setEmployeeSearch(e.target.value)} className="pl-8" />
+          <Input placeholder="氏名・ログインID・役職で検索" value={employeeSearch} onChange={(e) => setEmployeeSearch(e.target.value)} className="pl-8" />
         </div>
         <Button onClick={() => openEmployeeDialog()}>
           <Plus className="w-4 h-4 mr-2" />
@@ -871,9 +743,11 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>コード</TableHead>
+              <TableHead>従業員番号</TableHead>
               <TableHead>氏名</TableHead>
-              <TableHead>部署</TableHead>
+              <TableHead>ログインID</TableHead>
+              <TableHead>権限</TableHead>
+              <TableHead>役職</TableHead>
               <TableHead>入社日</TableHead>
               <TableHead>状態</TableHead>
               <TableHead className="w-20" />
@@ -882,9 +756,15 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
           <TableBody>
             {filteredEmployees.map((e) => (
               <TableRow key={e.id}>
-                <TableCell className="font-mono">{e.code || '-'}</TableCell>
+                <TableCell className="font-mono tabular-nums">{e.employeeNumber}</TableCell>
                 <TableCell>{e.name}</TableCell>
-                <TableCell>{e.department || '-'}</TableCell>
+                <TableCell className="font-mono">{e.loginId}</TableCell>
+                <TableCell>
+                  <Badge variant={e.role === 'owner' || e.role === 'admin' ? 'default' : 'secondary'}>
+                    {e.role === 'owner' || e.role === 'admin' ? '管理者' : '現場'}
+                  </Badge>
+                </TableCell>
+                <TableCell className="text-muted-foreground">{e.position || '-'}</TableCell>
                 <TableCell>{e.hireDate || '-'}</TableCell>
                 <TableCell>{e.isActive ? <Badge variant="outline">在籍</Badge> : <Badge variant="outline" className="text-muted-foreground">退職</Badge>}</TableCell>
                 <TableCell>
@@ -904,20 +784,42 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
             <DialogTitle>{editingEmployee ? '従業員の編集' : '従業員の追加'}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
+            {editingEmployee && (
+              <div className="space-y-2">
+                <Label>従業員番号</Label>
+                <Input value={String(editingEmployee.employeeNumber)} readOnly disabled className="bg-muted font-mono tabular-nums" />
+                <p className="text-xs text-muted-foreground">1から順に自動採番（編集不可）</p>
+              </div>
+            )}
+            {!editingEmployee && (
+              <p className="text-sm text-muted-foreground">従業員番号は登録時に1から順に自動採番されます。</p>
+            )}
             <div className="space-y-2">
               <Label>氏名 *</Label>
               <Input value={employeeForm.name} onChange={(e) => setEmployeeForm((f) => ({ ...f, name: e.target.value }))} placeholder="山田太郎" />
             </div>
             <div className="space-y-2">
-              <Label>従業員コード</Label>
-              <Input value={employeeForm.code} onChange={(e) => setEmployeeForm((f) => ({ ...f, code: e.target.value }))} placeholder="EMP001" />
+              <Label>ログインID *</Label>
+              <Input value={employeeForm.loginId} onChange={(e) => setEmployeeForm((f) => ({ ...f, loginId: e.target.value }))} placeholder="user1" />
             </div>
             <div className="space-y-2">
-              <Label>部署</Label>
-              <Input value={employeeForm.department} onChange={(e) => setEmployeeForm((f) => ({ ...f, department: e.target.value }))} placeholder="施工課" />
+              <Label>権限</Label>
+              <Select value={employeeForm.role} onValueChange={(v) => setEmployeeForm((f) => ({ ...f, role: v }))}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="owner">管理者</SelectItem>
+                  <SelectItem value="field">現場</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
             <div className="space-y-2">
-              <Label>入社日</Label>
+              <Label>役職（任意）</Label>
+              <Input value={employeeForm.position} onChange={(e) => setEmployeeForm((f) => ({ ...f, position: e.target.value }))} placeholder="施工主任" />
+            </div>
+            <div className="space-y-2">
+              <Label>入社日（任意）</Label>
               <Input type="date" value={employeeForm.hireDate} onChange={(e) => setEmployeeForm((f) => ({ ...f, hireDate: e.target.value }))} />
             </div>
             <div className="flex items-center gap-2">
@@ -928,7 +830,7 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
                 onChange={(e) => setEmployeeForm((f) => ({ ...f, isActive: e.target.checked }))}
                 className="rounded border-border"
               />
-              <Label htmlFor="emp-active">在籍</Label>
+              <Label htmlFor="emp-active">在籍（退職にするとシステムログインできなくなります）</Label>
             </div>
           </div>
           <DialogFooter>
@@ -945,7 +847,7 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
   const renderLoginHistoryTab = () => (
     <Card className="border border-border">
       <CardHeader>
-        <CardTitle className="text-base">ログイン履歴（US-0001）</CardTitle>
+        <CardTitle className="text-base">ログイン履歴</CardTitle>
         <p className="text-sm text-muted-foreground">ログイン成功/失敗が記録されます（ユーザーID・日時・結果・端末情報）</p>
       </CardHeader>
       <CardContent>
@@ -986,7 +888,7 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
   const renderAuditLogTab = () => (
     <Card className="border border-border">
       <CardHeader>
-        <CardTitle className="text-base">監査ログ（US-0006）</CardTitle>
+        <CardTitle className="text-base">監査ログ</CardTitle>
         <p className="text-sm text-muted-foreground">重要操作の記録（日時・ユーザーID・操作種別・対象ID・結果）。1年保持。</p>
       </CardHeader>
       <CardContent>
@@ -1032,7 +934,7 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
         </div>
         <div className="flex-1 overflow-y-auto p-3">
           <div className="space-y-1">
-            {(['basic', 'materials', 'rates', 'users', 'employees', 'login-history', 'audit-log'] as const).map((tab) => (
+            {(['basic', 'materials', 'rates', 'employees', 'login-history', 'audit-log'] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -1043,7 +945,6 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
                 {tab === 'basic' && <Settings2 className="w-4 h-4" />}
                 {tab === 'materials' && <Package className="w-4 h-4" />}
                 {tab === 'rates' && <TrendingUp className="w-4 h-4" />}
-                {tab === 'users' && <Users className="w-4 h-4" />}
                 {tab === 'employees' && <UserCheck className="w-4 h-4" />}
                 {tab === 'login-history' && <History className="w-4 h-4" />}
                 {tab === 'audit-log' && <ScrollText className="w-4 h-4" />}
@@ -1051,7 +952,6 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
                   {tab === 'basic' && '基本設定'}
                   {tab === 'materials' && '材料価格マスタ'}
                   {tab === 'rates' && '標準歩掛マスタ'}
-                  {tab === 'users' && 'ユーザー管理'}
                   {tab === 'employees' && '従業員管理'}
                   {tab === 'login-history' && 'ログイン履歴'}
                   {tab === 'audit-log' && '監査ログ'}
@@ -1068,7 +968,6 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
               {activeTab === 'basic' && '基本設定'}
               {activeTab === 'materials' && '材料価格マスタ'}
               {activeTab === 'rates' && '標準歩掛マスタ'}
-              {activeTab === 'users' && 'ユーザー管理'}
               {activeTab === 'employees' && '従業員管理'}
               {activeTab === 'login-history' && 'ログイン履歴'}
               {activeTab === 'audit-log' && '監査ログ'}
@@ -1077,7 +976,6 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
           {activeTab === 'basic' && renderBasicTab()}
           {activeTab === 'materials' && renderMaterialsTab()}
           {activeTab === 'rates' && renderRatesTab()}
-          {activeTab === 'users' && renderUsersTab()}
           {activeTab === 'employees' && renderEmployeesTab()}
           {activeTab === 'login-history' && renderLoginHistoryTab()}
           {activeTab === 'audit-log' && renderAuditLogTab()}

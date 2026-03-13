@@ -8,7 +8,7 @@ import { Badge } from './ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from './ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from './ui/alert-dialog';
-import { Plus, Search, Edit2, Archive, Eye, Building2, ArrowUpDown, ArrowUp, ArrowDown, FileText, Receipt, Package } from 'lucide-react';
+import { Plus, Search, Edit2, Eye, Building2, ArrowUpDown, ArrowUp, ArrowDown, FileText, Receipt, Package, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAudit } from '../contexts/AuditContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -23,7 +23,6 @@ export interface ProjectRecord {
   status: 'scheduled' | 'in-progress' | 'completed' | 'lost' | 'on-hold';
   memo?: string;
   createdAt: string;
-  archived: boolean;
 }
 
 interface EstimateRecord {
@@ -87,9 +86,9 @@ const Projects: React.FC<ProjectsProps> = ({
   const userId = session?.user?.id ?? '';
 
   const [projects, setProjects] = useState<ProjectRecord[]>([
-    { id: 'PRJ-001', projectName: 'A邸内装工事', customerName: 'A邸プロジェクト', startDate: '2024-12-01', endDate: '2024-12-15', assignee: '田中太郎', status: 'in-progress', createdAt: '2024-11-20', archived: false },
-    { id: 'PRJ-002', projectName: 'Bビル改修工事', customerName: 'Bビル改修', startDate: '2024-12-05', endDate: '2024-12-20', assignee: '佐藤花子', status: 'in-progress', createdAt: '2024-11-22', archived: false },
-    { id: 'PRJ-003', projectName: 'C店舗改装', customerName: 'A邸プロジェクト', startDate: '2025-01-10', endDate: '2025-01-25', assignee: '山田次郎', status: 'scheduled', createdAt: '2024-12-01', archived: false },
+    { id: 'PRJ-001', projectName: 'A邸内装工事', customerName: 'A邸プロジェクト', startDate: '2024-12-01', endDate: '2024-12-15', assignee: '田中太郎', status: 'in-progress', createdAt: '2024-11-20' },
+    { id: 'PRJ-002', projectName: 'Bビル改修工事', customerName: 'Bビル改修', startDate: '2024-12-05', endDate: '2024-12-20', assignee: '佐藤花子', status: 'in-progress', createdAt: '2024-11-22' },
+    { id: 'PRJ-003', projectName: 'C店舗改装', customerName: 'A邸プロジェクト', startDate: '2025-01-10', endDate: '2025-01-25', assignee: '山田次郎', status: 'scheduled', createdAt: '2024-12-01' },
   ]);
 
   const [keyword, setKeyword] = useState('');
@@ -97,14 +96,13 @@ const Projects: React.FC<ProjectsProps> = ({
   const [customerFilter, setCustomerFilter] = useState<string>('all');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
-  const [showArchived, setShowArchived] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>('startDate');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingProject, setEditingProject] = useState<ProjectRecord | null>(null);
   const [detailProject, setDetailProject] = useState<ProjectRecord | null>(null);
-  const [archiveTarget, setArchiveTarget] = useState<ProjectRecord | null>(null);
-  const [archiveReason, setArchiveReason] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ProjectRecord | null>(null);
+  const [deleteBlockedProject, setDeleteBlockedProject] = useState<ProjectRecord | null>(null);
 
   const [form, setForm] = useState({
     projectName: '',
@@ -134,13 +132,8 @@ const Projects: React.FC<ProjectsProps> = ({
 
   const filteredProjects = useMemo(() => {
     let list = projects.filter((p) => {
-      if (p.archived) {
-        if (!showArchived) return false;
-        // アーカイブ表示時はアーカイブのものを表示（顧客・期間・キーワードは適用）
-      } else {
-        if (statusFilter === DEFAULT_STATUS_FILTER && !['scheduled', 'in-progress'].includes(p.status)) return false;
-        if (statusFilter !== 'all' && statusFilter !== DEFAULT_STATUS_FILTER && p.status !== statusFilter) return false;
-      }
+      if (statusFilter === DEFAULT_STATUS_FILTER && !['scheduled', 'in-progress'].includes(p.status)) return false;
+      if (statusFilter !== 'all' && statusFilter !== DEFAULT_STATUS_FILTER && p.status !== statusFilter) return false;
       if (customerFilter !== 'all' && p.customerName !== customerFilter) return false;
       if (dateFrom && p.startDate < dateFrom) return false;
       if (dateTo && (p.endDate || '') > dateTo) return false;
@@ -155,7 +148,7 @@ const Projects: React.FC<ProjectsProps> = ({
       return sortDir === 'asc' ? cmp : -cmp;
     });
     return list;
-  }, [projects, keyword, statusFilter, customerFilter, dateFrom, dateTo, showArchived, sortKey, sortDir]);
+  }, [projects, keyword, statusFilter, customerFilter, dateFrom, dateTo, sortKey, sortDir]);
 
   const getStatusBadge = (status: string) => {
     const map: Record<string, string> = { scheduled: 'bg-blue-500', 'in-progress': 'bg-primary', completed: 'bg-green-600', 'on-hold': 'bg-amber-500', lost: 'bg-red-600' };
@@ -257,7 +250,6 @@ const Projects: React.FC<ProjectsProps> = ({
           status: form.status,
           memo: form.memo || undefined,
           createdAt,
-          archived: false,
         },
       ]);
       auditLog({ userId, action: '案件作成', targetId: id, result: 'success' });
@@ -266,21 +258,23 @@ const Projects: React.FC<ProjectsProps> = ({
     setDialogOpen(false);
   };
 
-  const requestArchive = (p: ProjectRecord) => {
+  const requestDelete = (p: ProjectRecord) => {
     const links = linkedCount(p);
     const hasLinks = links.estimates.length > 0 || links.invoices.length > 0 || links.purchaseOrders.length > 0;
-    setArchiveTarget(p);
-    setArchiveReason(hasLinks ? 'linked' : null);
+    if (hasLinks) {
+      setDeleteBlockedProject(p);
+    } else {
+      setDeleteTarget(p);
+    }
   };
 
-  const doArchive = () => {
-    if (!archiveTarget) return;
-    setProjects((prev) => prev.map((x) => (x.id === archiveTarget.id ? { ...x, archived: true } : x)));
-    auditLog({ userId, action: '案件アーカイブ', targetId: archiveTarget.id, result: 'success' });
-    toast.success('案件をアーカイブしました');
-    setArchiveTarget(null);
-    setArchiveReason(null);
-    setDetailProject((prev) => (prev?.id === archiveTarget.id ? null : prev));
+  const doDelete = () => {
+    if (!deleteTarget) return;
+    setProjects((prev) => prev.filter((x) => x.id !== deleteTarget.id));
+    auditLog({ userId, action: '案件削除', targetId: deleteTarget.id, result: 'success' });
+    toast.success('案件を削除しました');
+    setDeleteTarget(null);
+    setDetailProject((prev) => (prev?.id === deleteTarget.id ? null : prev));
   };
 
   const linkedForDetail = detailProject ? linkedCount(detailProject) : { estimates: [] as EstimateRecord[], invoices: [] as InvoiceRecord[], purchaseOrders: [] as PurchaseOrderRecord[] };
@@ -289,8 +283,8 @@ const Projects: React.FC<ProjectsProps> = ({
     <div className="p-6 max-w-screen-2xl mx-auto space-y-6">
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">案件管理（F-24）</h1>
-          <p className="text-muted-foreground">案件の一覧・作成・編集・アーカイブ。紐づく見積・発注・請求へ遷移できます。</p>
+          <h1 className="text-2xl font-semibold tracking-tight">案件管理</h1>
+          <p className="text-muted-foreground">案件の一覧・作成・編集・削除。予算・進捗・実績原価は表示しません。紐づく見積・発注・請求へ遷移できます。</p>
         </div>
         <Button onClick={openCreate}>
           <Plus className="w-4 h-4 mr-2" />
@@ -303,7 +297,7 @@ const Projects: React.FC<ProjectsProps> = ({
           <div className="flex flex-wrap items-center gap-4">
             <div className="relative flex-1 min-w-[200px] max-w-sm">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <Input placeholder="案件名・顧客・担当者で検索..." value={keyword} onChange={(e) => setKeyword(e.target.value)} className="pl-10" />
+              <Input placeholder="キーワード（案件名・顧客・担当者）" value={keyword} onChange={(e) => setKeyword(e.target.value)} className="pl-10" />
             </div>
             <div className="flex items-center gap-2">
               <Label className="text-sm text-muted-foreground whitespace-nowrap">ステータス</Label>
@@ -312,7 +306,7 @@ const Projects: React.FC<ProjectsProps> = ({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={DEFAULT_STATUS_FILTER}>予定・進行中（既定）</SelectItem>
+                  <SelectItem value={DEFAULT_STATUS_FILTER}>予定 or 進行中（既定）</SelectItem>
                   <SelectItem value="all">すべて</SelectItem>
                   <SelectItem value="scheduled">予定</SelectItem>
                   <SelectItem value="in-progress">進行中</SelectItem>
@@ -342,10 +336,6 @@ const Projects: React.FC<ProjectsProps> = ({
               <span className="text-muted-foreground">～</span>
               <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="w-36" placeholder="終了日まで" />
             </div>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} className="rounded border-border" />
-              アーカイブを表示
-            </label>
             <span className="text-sm text-muted-foreground ml-auto">{filteredProjects.length}件</span>
           </div>
         </CardHeader>
@@ -368,13 +358,13 @@ const Projects: React.FC<ProjectsProps> = ({
                 <TableRow>
                   <TableCell colSpan={8} className="text-center py-12 text-muted-foreground">
                     <Building2 className="w-12 h-12 mx-auto opacity-20 mb-2" />
-                    <p>条件に一致する案件がありません</p>
-                    <p className="text-sm mt-1">フィルタを変えるか、アーカイブを表示にしてください。</p>
+                    <p>{projects.length === 0 ? '案件がありません' : '条件に一致する案件がありません'}</p>
+                    <p className="text-sm mt-1">{projects.length === 0 ? '新規案件を作成してください。' : 'フィルタを変更してください。'}</p>
                   </TableCell>
                 </TableRow>
               ) : (
                 filteredProjects.map((project) => (
-                  <TableRow key={project.id} className={project.archived ? 'opacity-60' : ''}>
+                  <TableRow key={project.id}>
                     <TableCell className="font-medium">{project.projectName}</TableCell>
                     <TableCell>{project.customerName}</TableCell>
                     <TableCell>{getStatusBadge(project.status)}</TableCell>
@@ -390,11 +380,9 @@ const Projects: React.FC<ProjectsProps> = ({
                         <Button variant="ghost" size="sm" className="h-8 w-8 p-0" title="編集" onClick={() => openEdit(project)}>
                           <Edit2 className="w-4 h-4" />
                         </Button>
-                        {!project.archived && (
-                          <Button variant="ghost" size="sm" className="h-8 w-8 p-0 text-amber-600" title="アーカイブ" onClick={() => requestArchive(project)}>
-                            <Archive className="w-4 h-4" />
-                          </Button>
-                        )}
+                        <Button variant="ghost" size="sm" className="h-8 w-8 p-0 text-destructive" title="削除" onClick={() => requestDelete(project)}>
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -408,7 +396,7 @@ const Projects: React.FC<ProjectsProps> = ({
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>{editingProject ? '案件の編集（US-1023）' : '新規案件作成（US-1022）'}</DialogTitle>
+            <DialogTitle>{editingProject ? '案件の編集' : '新規案件作成'}</DialogTitle>
             <DialogDescription>必須：案件名・顧客・開始日。編集時も必須項目を満たしてください。</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
@@ -475,7 +463,7 @@ const Projects: React.FC<ProjectsProps> = ({
       <Dialog open={!!detailProject} onOpenChange={() => setDetailProject(null)}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>案件詳細（US-1025）</DialogTitle>
+            <DialogTitle>案件詳細</DialogTitle>
             <DialogDescription>基本情報と紐づく見積・発注・請求。各「開く」で該当画面へ遷移します。</DialogDescription>
           </DialogHeader>
           {detailProject && (
@@ -558,19 +546,31 @@ const Projects: React.FC<ProjectsProps> = ({
         </DialogContent>
       </Dialog>
 
-      <AlertDialog open={!!archiveTarget} onOpenChange={(o) => !o && setArchiveTarget(null)}>
+      <AlertDialog open={!!deleteBlockedProject} onOpenChange={(o) => !o && setDeleteBlockedProject(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{archiveReason === 'linked' ? '削除できません（US-1024）' : 'アーカイブしますか？'}</AlertDialogTitle>
+            <AlertDialogTitle>削除できません</AlertDialogTitle>
             <AlertDialogDescription>
-              {archiveReason === 'linked'
-                ? 'この案件には見積・請求・発注が紐づいているため削除できません。一覧の既定表示から除外するにはアーカイブをご利用ください。'
-                : 'アーカイブすると一覧の既定表示から除外されます。フィルタで「アーカイブを表示」すると再度表示できます。'}
+              この案件には見積・請求・発注が紐づいているため削除できません。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => { setArchiveTarget(null); setArchiveReason(null); }}>{archiveReason === 'linked' ? '閉じる' : 'キャンセル'}</AlertDialogCancel>
-            <AlertDialogAction onClick={doArchive}>アーカイブする</AlertDialogAction>
+            <AlertDialogCancel onClick={() => setDeleteBlockedProject(null)}>閉じる</AlertDialogCancel>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>案件を削除しますか？</AlertDialogTitle>
+            <AlertDialogDescription>
+              この案件を一覧から削除します。見積・請求・発注が紐づいている場合は削除できません。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setDeleteTarget(null)}>キャンセル</AlertDialogCancel>
+            <AlertDialogAction onClick={doDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">削除する</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

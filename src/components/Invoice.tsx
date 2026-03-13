@@ -65,7 +65,7 @@ interface InvoiceProps {
 
 const statusLabels: Record<string, string> = {
   draft: '下書き',
-  issued: '発行済',
+  issued: '保存済',
   cancelled: '取消',
 };
 
@@ -93,6 +93,11 @@ const Invoice: React.FC<InvoiceProps> = ({ invoices, setInvoices, quoteProjects,
   const customerOptions = useMemo(
     () => customers.filter((c) => c.type === 'customer' && c.isActive !== false),
     [customers]
+  );
+
+  const assigneeOptions = useMemo(
+    () => [...new Set(customerOptions.map((c) => c.contactPerson).filter(Boolean))] as string[],
+    [customerOptions]
   );
 
   const filteredList = useMemo(() => {
@@ -159,7 +164,7 @@ const Invoice: React.FC<InvoiceProps> = ({ invoices, setInvoices, quoteProjects,
       projectName = est.projectName;
       const cust = customers.find((c) => c.id === est.customerId);
       billingDayDisplay = cust?.billingDay;
-      contactPerson = cust?.contactPerson ?? '';
+      contactPerson = cust?.contactPerson ?? (customerOptions[0]?.contactPerson ?? '');
       items = est.items.map((it, idx) => {
         const amt = it.quantity * it.unitPrice;
         subtotal += amt;
@@ -180,23 +185,42 @@ const Invoice: React.FC<InvoiceProps> = ({ invoices, setInvoices, quoteProjects,
       const cust = customers.find((c) => c.companyName === proj.customerName);
       customerId = cust?.id ?? '';
       billingDayDisplay = cust?.billingDay;
-      contactPerson = cust?.contactPerson ?? '';
-      const sourceItems = proj.quoteItems?.length ? proj.quoteItems : (proj.extractedItems ?? []).map((e) => ({ ...e, unitPrice: 0, amount: e.quantity * 0 }));
-      sourceItems.forEach((it, idx) => {
-        const amount = 'amount' in it && it.amount != null ? it.amount : it.quantity * ((it as any).unitPrice ?? 0);
-        subtotal += amount;
-        items.push({
-          id: `li-${idx}`,
-          item: it.item,
-          quantity: it.quantity,
-          unit: it.unit ?? '式',
-          unitPrice: 'unitPrice' in it ? (it as any).unitPrice : 0,
-          amount,
+      contactPerson = cust?.contactPerson ?? (customerOptions[0]?.contactPerson ?? '');
+      // 明細は見積書から自動：該当案件の確定済み見積があればその明細を使用
+      const matchingEstimate = estimates.find(
+        (e) => e.status === 'confirmed' && e.items.length > 0 && e.projectName === proj.projectName && e.customerName === proj.customerName
+      );
+      if (matchingEstimate) {
+        items = matchingEstimate.items.map((it, idx) => {
+          const amt = it.quantity * it.unitPrice;
+          subtotal += amt;
+          return {
+            id: `li-${idx}`,
+            item: it.item,
+            quantity: it.quantity,
+            unit: it.unit,
+            unitPrice: it.unitPrice,
+            amount: amt,
+          };
         });
-      });
-      if (items.length === 0 && proj.totalAmount > 0) {
-        items = [{ id: 'li-0', item: '工事請負', quantity: 1, unit: '式', unitPrice: proj.totalAmount, amount: proj.totalAmount }];
-        subtotal = proj.totalAmount;
+      } else {
+        const sourceItems = proj.quoteItems?.length ? proj.quoteItems : (proj.extractedItems ?? []).map((e) => ({ ...e, unitPrice: 0, amount: e.quantity * 0 }));
+        sourceItems.forEach((it, idx) => {
+          const amount = 'amount' in it && it.amount != null ? it.amount : it.quantity * ((it as any).unitPrice ?? 0);
+          subtotal += amount;
+          items.push({
+            id: `li-${idx}`,
+            item: it.item,
+            quantity: it.quantity,
+            unit: it.unit ?? '式',
+            unitPrice: 'unitPrice' in it ? (it as any).unitPrice : 0,
+            amount,
+          });
+        });
+        if (items.length === 0 && proj.totalAmount > 0) {
+          items = [{ id: 'li-0', item: '工事請負', quantity: 1, unit: '式', unitPrice: proj.totalAmount, amount: proj.totalAmount }];
+          subtotal = proj.totalAmount;
+        }
       }
     } else return;
 
@@ -230,6 +254,7 @@ const Invoice: React.FC<InvoiceProps> = ({ invoices, setInvoices, quoteProjects,
     estimates,
     quoteProjects,
     customers,
+    customerOptions,
     invoices,
     setInvoices,
     auditLog,
@@ -314,7 +339,15 @@ const Invoice: React.FC<InvoiceProps> = ({ invoices, setInvoices, quoteProjects,
 
   const saveInvoice = useCallback(
     (inv: InvoiceRecord) => {
-      setInvoices((prev) => prev.map((i) => (i.id === inv.id ? { ...inv, lastUpdated: new Date().toISOString().split('T')[0] } : i)));
+      const now = new Date().toISOString();
+      const today = now.split('T')[0];
+      const next: InvoiceRecord = {
+        ...inv,
+        lastUpdated: today,
+        status: inv.status === 'draft' ? 'issued' : inv.status,
+        updateHistory: [...(inv.updateHistory ?? []), { at: now, action: '保存' }],
+      };
+      setInvoices((prev) => prev.map((i) => (i.id === inv.id ? next : i)));
       auditLog({ userId, action: '請求書保存', targetId: inv.id, result: 'success' });
       toast.success('請求書を保存しました');
     },
@@ -323,12 +356,12 @@ const Invoice: React.FC<InvoiceProps> = ({ invoices, setInvoices, quoteProjects,
 
   const exportExcel = useCallback(
     (inv: InvoiceRecord) => {
+      // 請求番号・電話番号・メールアドレスは印字しない
       const wsData: (string | number)[][] = [
         ['請求書'],
-        ['請求番号（内部）', inv.invoiceNumber],
         ['顧客名', inv.customerName],
         ['案件名', inv.projectName],
-        ['請求日', inv.billingDayDisplay != null ? (inv.billingDayDisplay === 99 ? '月末' : `${inv.billingDayDisplay}日締め`) : ''],
+        ['請求日', inv.billingDayDisplay != null ? (inv.billingDayDisplay === 99 ? '月末締め' : `${inv.billingDayDisplay}日締め`) : ''],
         inv.contactPerson ? ['担当者', inv.contactPerson] : [],
         [],
         ['品目', '数量', '単位', '単価', '金額'],
@@ -341,7 +374,7 @@ const Invoice: React.FC<InvoiceProps> = ({ invoices, setInvoices, quoteProjects,
       const ws = XLSX.utils.aoa_to_sheet(wsData);
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, '請求書');
-      XLSX.writeFile(wb, `請求書_${inv.invoiceNumber}.xlsx`);
+      XLSX.writeFile(wb, `請求書_${inv.customerName}_${inv.projectName || '請求'}.xlsx`);
       toast.success('Excelをダウンロードしました');
     },
     []
@@ -351,8 +384,10 @@ const Invoice: React.FC<InvoiceProps> = ({ invoices, setInvoices, quoteProjects,
     <div className="p-6 max-w-screen-2xl mx-auto space-y-6">
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">請求（F-12）</h1>
-          <p className="text-muted-foreground">請求書の作成・編集・Excel出力。請求番号は内部管理用です。</p>
+          <h1 className="text-2xl font-semibold tracking-tight">請求</h1>
+          <p className="text-muted-foreground">
+            請求書の作成・保存・Excel出力。請求日は宛先（顧客）ごとに顧客管理で登録した締め日を初期表示（編集可・20日締め・月末締め等）。支払い期限は不要。請求番号・電話番号・メールアドレスは印字しません。担当者は選択または自由入力。保存後もいつでも修正してExcelダウンロードできます。
+          </p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={openCreateFromEstimate}>
@@ -370,9 +405,9 @@ const Invoice: React.FC<InvoiceProps> = ({ invoices, setInvoices, quoteProjects,
       <Dialog open={createSource !== null} onOpenChange={(o) => !o && setCreateSource(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>請求書を作成（US-1011）</DialogTitle>
+            <DialogTitle>請求書を作成</DialogTitle>
             <DialogDescription>
-              見積（確定）または案件から請求を作成します。請求日は顧客マスタの請求日が初期値です。税率・端数はシステム設定を使用します。
+              見積（確定）または案件から請求を作成します。明細は見積書から自動で取り込みます（案件から作成の場合は、該当する確定済み見積があればその明細を使用）。請求日は顧客管理の締め日を初期表示（編集可）。担当者は選択または自由入力。
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
@@ -420,7 +455,7 @@ const Invoice: React.FC<InvoiceProps> = ({ invoices, setInvoices, quoteProjects,
         </DialogContent>
       </Dialog>
 
-      {/* 一覧（US-1015） */}
+      {/* 一覧 */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center justify-between">
@@ -430,14 +465,14 @@ const Invoice: React.FC<InvoiceProps> = ({ invoices, setInvoices, quoteProjects,
           <div className="flex flex-wrap items-center gap-4 mt-4">
             <div className="relative flex-1 min-w-[200px]">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <Input placeholder="請求番号・顧客・案件で検索..." value={listKeyword} onChange={(e) => setListKeyword(e.target.value)} className="pl-10" />
+              <Input placeholder="キーワード（請求番号・顧客・案件）" value={listKeyword} onChange={(e) => setListKeyword(e.target.value)} className="pl-10" />
             </div>
             <Select value={listStatus} onValueChange={setListStatus}>
-              <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="w-32"><SelectValue placeholder="状態" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">すべて</SelectItem>
                 <SelectItem value="draft">下書き</SelectItem>
-                <SelectItem value="issued">発行済</SelectItem>
+                <SelectItem value="issued">保存済</SelectItem>
                 <SelectItem value="cancelled">取消</SelectItem>
               </SelectContent>
             </Select>
@@ -451,7 +486,6 @@ const Invoice: React.FC<InvoiceProps> = ({ invoices, setInvoices, quoteProjects,
               <TableRow>
                 <TableHead>請求番号</TableHead>
                 <TableHead>顧客</TableHead>
-                <TableHead>案件名</TableHead>
                 <TableHead className="w-28">状態</TableHead>
                 <TableHead className="text-right w-36">金額</TableHead>
                 <TableHead className="w-32">更新日</TableHead>
@@ -461,7 +495,7 @@ const Invoice: React.FC<InvoiceProps> = ({ invoices, setInvoices, quoteProjects,
             <TableBody>
               {filteredList.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center py-12 text-muted-foreground">
+                  <TableCell colSpan={6} className="text-center py-12 text-muted-foreground">
                     条件に一致する請求がありません
                   </TableCell>
                 </TableRow>
@@ -470,7 +504,6 @@ const Invoice: React.FC<InvoiceProps> = ({ invoices, setInvoices, quoteProjects,
                   <TableRow key={inv.id}>
                     <TableCell className="font-medium">{inv.invoiceNumber}</TableCell>
                     <TableCell>{inv.customerName}</TableCell>
-                    <TableCell>{inv.projectName}</TableCell>
                     <TableCell><Badge variant={inv.status === 'issued' ? 'default' : 'secondary'}>{statusLabels[inv.status]}</Badge></TableCell>
                     <TableCell className="text-right">¥{inv.totalAmount.toLocaleString()}</TableCell>
                     <TableCell className="text-sm">{inv.lastUpdated}</TableCell>
@@ -485,7 +518,7 @@ const Invoice: React.FC<InvoiceProps> = ({ invoices, setInvoices, quoteProjects,
         </CardContent>
       </Card>
 
-      {/* 請求詳細・編集（US-1012, 1013, 1014） */}
+      {/* 請求詳細・編集 */}
       <Dialog open={!!selectedInvoice} onOpenChange={(o) => !o && setDetailId(null)}>
         <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
@@ -498,7 +531,9 @@ const Invoice: React.FC<InvoiceProps> = ({ invoices, setInvoices, quoteProjects,
                 <Button variant="ghost" size="sm" onClick={() => setDetailId(null)}><X className="w-4 h-4" /></Button>
               </div>
             </DialogTitle>
-            <DialogDescription>明細はいつでも編集可能。保存で更新履歴が残ります。電話番号・メールは印字しません。</DialogDescription>
+            <DialogDescription>
+              明細・請求日・担当者はいつでも編集可能。保存で更新履歴が残ります。Excelダウンロード時は請求番号・電話番号・メールアドレスは印字しません。いつでも修正して再ダウンロードできます。
+            </DialogDescription>
           </DialogHeader>
           {selectedInvoice && (
             <div className="space-y-4 py-4">
@@ -512,24 +547,62 @@ const Invoice: React.FC<InvoiceProps> = ({ invoices, setInvoices, quoteProjects,
                   <p className="font-medium">{selectedInvoice.projectName}</p>
                 </div>
                 <div>
-                  <Label>請求日（表示用）</Label>
-                  <p className="font-medium">
-                    {selectedInvoice.billingDayDisplay != null
-                      ? selectedInvoice.billingDayDisplay === 99
-                        ? '月末締め'
-                        : `${selectedInvoice.billingDayDisplay}日締め`
-                      : '—'}
-                  </p>
+                  <Label>請求日（顧客管理の締め日を初期表示・編集可）</Label>
+                  <Select
+                    value={selectedInvoice.billingDayDisplay != null ? String(selectedInvoice.billingDayDisplay) : 'none'}
+                    onValueChange={(v) => {
+                      const val = v === 'none' ? undefined : v === '99' ? 99 : parseInt(v, 10);
+                      setInvoices((prev) =>
+                        prev.map((i) => (i.id === selectedInvoice.id ? { ...i, billingDayDisplay: val } : i))
+                      );
+                    }}
+                  >
+                    <SelectTrigger><SelectValue placeholder="選択" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">—</SelectItem>
+                      <SelectItem value="1">1日締め</SelectItem>
+                      <SelectItem value="5">5日締め</SelectItem>
+                      <SelectItem value="10">10日締め</SelectItem>
+                      <SelectItem value="15">15日締め</SelectItem>
+                      <SelectItem value="20">20日締め</SelectItem>
+                      <SelectItem value="25">25日締め</SelectItem>
+                      <SelectItem value="28">28日締め</SelectItem>
+                      <SelectItem value="99">月末締め</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div>
-                  <Label>担当者</Label>
-                  <Input
-                    value={selectedInvoice.contactPerson ?? ''}
-                    onChange={(e) =>
-                      setInvoices((prev) => prev.map((i) => (i.id === selectedInvoice.id ? { ...i, contactPerson: e.target.value } : i)))
-                    }
-                    placeholder="担当者名"
-                  />
+                  <Label>担当者（選択または自由入力）</Label>
+                  <div className="flex gap-2">
+                    {assigneeOptions.length > 0 ? (
+                      <Select
+                        value={selectedInvoice.contactPerson && assigneeOptions.includes(selectedInvoice.contactPerson) ? selectedInvoice.contactPerson : '__free__'}
+                        onValueChange={(v) =>
+                          setInvoices((prev) =>
+                            prev.map((i) =>
+                              i.id === selectedInvoice.id ? { ...i, contactPerson: v === '__free__' ? (i.contactPerson ?? '') : v } : i
+                            )
+                          )
+                        }
+                      >
+                        <SelectTrigger className="w-40 shrink-0"><SelectValue placeholder="選択" /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__free__">自由入力</SelectItem>
+                          {assigneeOptions.map((name) => (
+                            <SelectItem key={name} value={name}>{name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : null}
+                    <Input
+                      className="flex-1 min-w-0"
+                      value={selectedInvoice.contactPerson ?? ''}
+                      onChange={(e) =>
+                        setInvoices((prev) => prev.map((i) => (i.id === selectedInvoice.id ? { ...i, contactPerson: e.target.value } : i)))
+                      }
+                      placeholder="担当者名（自由入力）"
+                    />
+                  </div>
                 </div>
               </div>
               <div>
@@ -604,7 +677,7 @@ const Invoice: React.FC<InvoiceProps> = ({ invoices, setInvoices, quoteProjects,
               )}
               <DialogFooter>
                 <Button variant="outline" onClick={() => setDetailId(null)}>閉じる</Button>
-                <Button onClick={() => saveInvoice(selectedInvoice)}>保存（US-1013）</Button>
+                <Button onClick={() => saveInvoice(selectedInvoice)}>保存</Button>
               </DialogFooter>
             </div>
           )}
