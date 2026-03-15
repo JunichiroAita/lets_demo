@@ -21,6 +21,8 @@ export interface ProjectRecord {
   endDate: string;
   assignee: string;
   status: 'scheduled' | 'in-progress' | 'completed' | 'lost' | 'on-hold';
+  /** 規模（自由入力） */
+  scale?: string;
   memo?: string;
   createdAt: string;
 }
@@ -112,6 +114,7 @@ const Projects: React.FC<ProjectsProps> = ({
     endDate: '',
     assignee: '',
     status: 'scheduled' as ProjectRecord['status'],
+    scale: '',
     memo: '',
   });
 
@@ -178,6 +181,7 @@ const Projects: React.FC<ProjectsProps> = ({
       endDate: '',
       assignee: '',
       status: 'scheduled',
+      scale: '',
       memo: '',
     });
     setDialogOpen(true);
@@ -194,6 +198,7 @@ const Projects: React.FC<ProjectsProps> = ({
       endDate: p.endDate || '',
       assignee: p.assignee || '',
       status: p.status,
+      scale: p.scale || '',
       memo: p.memo || '',
     });
     setDialogOpen(true);
@@ -228,6 +233,7 @@ const Projects: React.FC<ProjectsProps> = ({
                 endDate: form.endDate || '',
                 assignee: form.assignee.trim(),
                 status: form.status,
+                scale: form.scale.trim() || undefined,
                 memo: form.memo || undefined,
               }
             : p
@@ -248,6 +254,7 @@ const Projects: React.FC<ProjectsProps> = ({
           endDate: form.endDate || '',
           assignee: form.assignee.trim(),
           status: form.status,
+          scale: form.scale.trim() || undefined,
           memo: form.memo || undefined,
           createdAt,
         },
@@ -449,6 +456,10 @@ const Projects: React.FC<ProjectsProps> = ({
               </Select>
             </div>
             <div>
+              <Label>規模（任意）</Label>
+              <Input value={form.scale} onChange={(e) => setForm((f) => ({ ...f, scale: e.target.value }))} placeholder="例: 延床面積 100m²" className="mt-1" />
+            </div>
+            <div>
               <Label>備考</Label>
               <Input value={form.memo} onChange={(e) => setForm((f) => ({ ...f, memo: e.target.value }))} placeholder="任意" className="mt-1" />
             </div>
@@ -475,6 +486,7 @@ const Projects: React.FC<ProjectsProps> = ({
                 <div><Label className="text-muted-foreground">開始日 / 終了日</Label><p className="font-medium">{detailProject.startDate} ～ {detailProject.endDate || '—'}</p></div>
                 <div><Label className="text-muted-foreground">担当者</Label><p className="font-medium">{detailProject.assignee || '—'}</p></div>
                 <div><Label className="text-muted-foreground">作成日</Label><p className="font-medium">{detailProject.createdAt}</p></div>
+                {detailProject.scale && <div className="col-span-2"><Label className="text-muted-foreground">規模</Label><p className="font-medium">{detailProject.scale}</p></div>}
                 {detailProject.memo && <div className="col-span-2"><Label className="text-muted-foreground">備考</Label><p className="text-sm">{detailProject.memo}</p></div>}
               </div>
 

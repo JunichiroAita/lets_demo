@@ -8,6 +8,7 @@ import { Separator } from './ui/separator';
 import { Label } from './ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { toast } from 'sonner';
+import * as XLSX from 'xlsx';
 import { Phone, Mail, Package, Building2, FileText, Search, Eye, X, Send, User, FileDown, Plus } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from './ui/dialog';
 import { useAudit } from '../contexts/AuditContext';
@@ -268,6 +269,31 @@ const PurchaseHistory: React.FC<PurchaseHistoryProps> = ({
     toast.success('CSVをダウンロードしました');
   };
 
+  /** 発注書をExcelでダウンロード */
+  const exportExcel = (order: PurchaseOrderRecord) => {
+    const header = [['発注書'], ['発注番号', order.id], ['案件名', order.projectName], ['発注日', order.orderDate], []];
+    const colHeaders = ['品目', '数量', '単位', '単価', '金額', '仕入先'];
+    const dataRows = order.materials.map((m) => [
+      m.materialName,
+      m.quantity,
+      m.unit,
+      m.unitPrice,
+      m.totalPrice,
+      m.supplierName ?? '',
+    ]);
+    const wsData = [...header, colHeaders, ...dataRows];
+    if (showTotal(order)) {
+      wsData.push([]);
+      wsData.push(['合計金額', order.totalAmount]);
+    }
+    if (order.memo) wsData.push(['備考', order.memo]);
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, '発注書');
+    XLSX.writeFile(wb, `発注書_${order.id}.xlsx`);
+    toast.success('Excelをダウンロードしました');
+  };
+
   const printForPDF = (order: PurchaseOrderRecord) => {
     const content = printRef.current;
     if (!content) return;
@@ -450,6 +476,9 @@ const PurchaseHistory: React.FC<PurchaseHistoryProps> = ({
               <div className="flex items-center gap-2">
                 {selectedOrder && (
                   <>
+                    <Button variant="outline" size="sm" onClick={() => selectedOrder && exportExcel(selectedOrder)}>
+                      <FileDown className="w-4 h-4 mr-1" />Excel
+                    </Button>
                     <Button variant="outline" size="sm" onClick={() => selectedOrder && exportCSV(selectedOrder)}>
                       <FileDown className="w-4 h-4 mr-1" />CSV
                     </Button>

@@ -155,8 +155,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return { success: false, error: `ロック中です。${LOCKOUT_MINUTES}分後に再試行してください。` };
       }
       const user = users.find((u) => u.loginId === loginId && u.isActive);
-      // デモ: パスワードは "password" または 登録時の平文が hash として保存されている場合は照合しない（バックエンドでハッシュ照合する想定）
-      const passwordOk = !user ? false : user.passwordHash ? password === 'password' || password.length >= 8 : password.length >= 8;
+      // デモ: 従業員に登録したパスワード（passwordHash に平文を渡している想定）と一致すればOK。未設定時は "password" でログイン可能
+      const passwordOk = !user ? false : user.passwordHash ? password === user.passwordHash : password.length >= 8;
       if (!user || !passwordOk) {
         const count = incrementFailedCount();
         appendLoginHistory({ userId: '', loginId, result: 'failure', ipOrDevice: 'WEB' });

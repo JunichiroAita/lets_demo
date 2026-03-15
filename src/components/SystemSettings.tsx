@@ -55,6 +55,8 @@ export interface EmployeeRecord {
   employeeNumber: number; // 1から順に自動採番（編集不可）
   name: string;
   loginId: string;
+  /** パスワード（編集時は変更時のみ更新。未設定時はログイン不可の想定） */
+  password?: string;
   role: string;
   position?: string;   // 役職（未入力可）
   hireDate?: string;   // 入社日（未入力可）
@@ -121,7 +123,7 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
   // 従業員ダイアログ
   const [employeeDialogOpen, setEmployeeDialogOpen] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState<EmployeeRecord | null>(null);
-  const [employeeForm, setEmployeeForm] = useState({ name: '', loginId: '', role: 'field', position: '', hireDate: '', isActive: true });
+  const [employeeForm, setEmployeeForm] = useState({ name: '', loginId: '', password: '', role: 'field', position: '', hireDate: '', isActive: true });
   const [employeeSearch, setEmployeeSearch] = useState('');
 
   const saveBasicSettings = () => {
@@ -288,6 +290,7 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
       setEmployeeForm({
         name: e.name,
         loginId: e.loginId,
+        password: '', // 編集時は変更時のみ入力（表示しない）
         role: e.role,
         position: e.position ?? '',
         hireDate: e.hireDate ?? '',
@@ -295,7 +298,7 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
       });
     } else {
       setEditingEmployee(null);
-      setEmployeeForm({ name: '', loginId: '', role: 'field', position: '', hireDate: '', isActive: true });
+      setEmployeeForm({ name: '', loginId: '', password: '', role: 'field', position: '', hireDate: '', isActive: true });
     }
     setEmployeeDialogOpen(true);
   };
@@ -317,6 +320,7 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
                 ...x,
                 name: employeeForm.name.trim(),
                 loginId: employeeForm.loginId.trim(),
+                ...(employeeForm.password !== '' && { password: employeeForm.password }),
                 role: employeeForm.role,
                 position: employeeForm.position.trim() || undefined,
                 hireDate: employeeForm.hireDate.trim() || undefined,
@@ -336,6 +340,7 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
           employeeNumber: nextNum,
           name: employeeForm.name.trim(),
           loginId: employeeForm.loginId.trim(),
+          ...(employeeForm.password !== '' && { password: employeeForm.password }),
           role: employeeForm.role,
           position: employeeForm.position.trim() || undefined,
           hireDate: employeeForm.hireDate.trim() || undefined,
@@ -801,6 +806,10 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
             <div className="space-y-2">
               <Label>ログインID *</Label>
               <Input value={employeeForm.loginId} onChange={(e) => setEmployeeForm((f) => ({ ...f, loginId: e.target.value }))} placeholder="user1" />
+            </div>
+            <div className="space-y-2">
+              <Label>パスワード {editingEmployee ? '（変更時のみ入力）' : '（任意）'}</Label>
+              <Input type="password" value={employeeForm.password} onChange={(e) => setEmployeeForm((f) => ({ ...f, password: e.target.value }))} placeholder={editingEmployee ? '変更する場合のみ入力' : '未入力時はログイン不可'} autoComplete="new-password" />
             </div>
             <div className="space-y-2">
               <Label>権限</Label>

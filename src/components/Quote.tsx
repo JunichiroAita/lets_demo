@@ -99,14 +99,6 @@ export interface TakeoffResult {
   completedAt: string;
 }
 
-/** LLM/誤差閾値など設定。更新は監査ログ */
-export interface TakeoffSettings {
-  llmModel: string;
-  llmPrompt: string;
-  llmTemperature: number;
-  errorThresholdPercent: number;
-}
-
 export interface ExtractedItem {
   id: string;
   item: string;
@@ -151,13 +143,6 @@ const DEMO_QUOTE_ITEMS: QuoteItem[] = [
   { id: 4, item: '石膏ボード張り', quantity: 25, unit: 'm2', unitPrice: 1800, amount: 45000 },
 ];
 const DEMO_TOTAL = DEMO_QUOTE_ITEMS.reduce((s, r) => s + r.amount, 0);
-
-const DEFAULT_TAKEOFF_SETTINGS: TakeoffSettings = {
-  llmModel: 'gpt-4o',
-  llmPrompt: '図面から部材・数量を抽出し構造化してください。',
-  llmTemperature: 0.2,
-  errorThresholdPercent: 5,
-};
 
 /** デモ用：拾い結果サンプル（パイプライン完了時） */
 function buildMockTakeoffResult(): TakeoffResult {
@@ -248,20 +233,7 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
   const [detailDrawing, setDetailDrawing] = useState<DrawingRecord | null>(null);
   const [deleteConfirmDrawing, setDeleteConfirmDrawing] = useState<DrawingRecord | null>(null);
   const [resultDrawing, setResultDrawing] = useState<DrawingRecord | null>(null);
-  const [detailTargetPagesInput, setDetailTargetPagesInput] = useState('');
-  const [aiDetectingDrawingId, setAiDetectingDrawingId] = useState<string | null>(null);
-  const [takeoffSettings, setTakeoffSettings] = useState<TakeoffSettings>(DEFAULT_TAKEOFF_SETTINGS);
   const [editingTakeoffItems, setEditingTakeoffItems] = useState<TakeoffResultItem[]>([]);
-  const [showTakeoffSettings, setShowTakeoffSettings] = useState(false);
-  /** アップロード直後の「どの図面をAIに読み取らせるか」選択用 */
-  const [selectPagesDrawing, setSelectPagesDrawing] = useState<DrawingRecord | null>(null);
-  const [selectPagesManualInput, setSelectPagesManualInput] = useState('');
-  /** 図面一覧の絞込 */
-  const [drawingListKeyword, setDrawingListKeyword] = useState('');
-  const [drawingListDateFrom, setDrawingListDateFrom] = useState('');
-  const [drawingListDateTo, setDrawingListDateTo] = useState('');
-  const [drawingListStatus, setDrawingListStatus] = useState<string>('all');
-  const [drawingListShowArchived, setDrawingListShowArchived] = useState(false);
   /** 見積一覧 / 詳細 */
   const [estimateView, setEstimateView] = useState<'projects' | 'list' | 'detail'>('projects');
   const [selectedEstimateId, setSelectedEstimateId] = useState<string | null>(null);
@@ -275,9 +247,6 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
   /** 見積詳細で未保存の編集があるとき true。保存 or キャンセル必須 */
   const [estimateDetailDirty, setEstimateDetailDirty] = useState(false);
   const lastSavedEstimateRef = useRef<EstimateRecord | null>(null);
-  useEffect(() => {
-    setDetailTargetPagesInput(detailDrawing?.targetPages?.length ? detailDrawing.targetPages.join(',') : '');
-  }, [detailDrawing?.id]);
   /** 見積詳細を開いたときにスナップショットを保存。キャンセル時に復元用 */
   useEffect(() => {
     if (selectedEstimateId) {
@@ -316,27 +285,6 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
     project.projectName.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  /** 図面一覧の絞込。デフォルトはアーカイブ除外 */
-  const filteredDrawings = useMemo(() => {
-    const list = selectedProject?.drawings ?? [];
-    let out = drawingListShowArchived ? list : list.filter((d) => !d.archived);
-    if (drawingListKeyword.trim()) {
-      const k = drawingListKeyword.toLowerCase();
-      out = out.filter((d) => d.name.toLowerCase().includes(k) || (d.registeredBy || '').toLowerCase().includes(k));
-    }
-    if (drawingListDateFrom) out = out.filter((d) => d.registeredAt >= drawingListDateFrom);
-    if (drawingListDateTo) out = out.filter((d) => d.registeredAt <= drawingListDateTo);
-    if (drawingListStatus !== 'all') out = out.filter((d) => d.status === drawingListStatus);
-    return out.sort((a, b) => b.registeredAt.localeCompare(a.registeredAt));
-  }, [selectedProject?.drawings, drawingListKeyword, drawingListDateFrom, drawingListDateTo, drawingListStatus, drawingListShowArchived]);
-
-  /** 対象ページ選択ダイアログでAI判定結果を入力欄に反映 */
-  useEffect(() => {
-    if (!selectPagesDrawing || !selectedProject) return;
-    const cur = selectedProject.drawings.find((d) => d.id === selectPagesDrawing.id);
-    if (cur?.targetPages?.length) setSelectPagesManualInput(cur.targetPages.join(','));
-  }, [selectPagesDrawing?.id, selectedProject?.drawings]);
-
   const loadDemoData = () => {
     if (!selectedProjectId) return;
     const now = new Date().toISOString().split('T')[0];
@@ -366,7 +314,7 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
         };
       })
     );
-    toast.success('デモデータを読み込みました。「算出結果」「見積書」タブで確認できます。図面一覧から解析するファイルを選べます。');
+    toast.success('デモデータを読み込みました。「算出結果」「見積書」タブで確認できます。');
     setActiveTab('extract');
   };
 
@@ -755,17 +703,21 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
       targetId: drawingId,
       result: 'success',
     });
-    setSelectPagesDrawing(newDrawing);
-    setSelectPagesManualInput('');
-    toast.success(`「${file.name}」を登録しました。どの図面をAIに読み取らせるか選択してください。`);
+    toast.success(`「${file.name}」を登録しました。自動拾い開始で解析できます。`);
   };
 
-  /** 自動拾い開始。未処理 or エラー時のみジョブ作成。処理中は二重起動しない。 */
+  /** 自動拾い開始。未処理 or エラー時のみジョブ作成。処理中は二重起動しない。対象ページ未指定時は全ページで実行。 */
   const startTakeoff = (drawing: DrawingRecord) => {
     if (!selectedProjectId) return;
     if (drawing.status === '処理中') {
       toast.info('処理中のため二重起動できません。「処理中」のまま進捗を確認してください。');
       return;
+    }
+    const pages = drawing.targetPages?.length
+      ? drawing.targetPages
+      : Array.from({ length: drawing.pageCount ?? 20 }, (_, i) => i + 1);
+    if (!drawing.targetPages?.length) {
+      updateDrawingTargetPages(drawing.id, pages, 'manual');
     }
     const jobId = `JOB-${Date.now()}`;
     const startedAt = new Date().toISOString();
@@ -933,39 +885,6 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
     );
   };
 
-  /** AIで図面ページを自動判定（デモ: モックで対象ページを提案） */
-  const runAIPageDetection = (drawing: DrawingRecord) => {
-    if (!selectedProjectId) return;
-    setAiDetectingDrawingId(drawing.id);
-    const maxPage = drawing.pageCount ?? 20;
-    const suggested = Array.from({ length: Math.min(5, Math.max(1, Math.floor(maxPage / 3))) }, (_, i) => 2 + i * 3).filter((p) => p <= maxPage);
-    if (suggested.length === 0) suggested.push(1);
-    setTimeout(() => {
-      setQuoteProjects((prev) =>
-        prev.map((p) =>
-          p.id === selectedProjectId
-            ? {
-                ...p,
-                drawings: p.drawings.map((d) =>
-                  d.id === drawing.id
-                    ? {
-                        ...d,
-                        aiSuggestedPages: suggested,
-                        targetPages: suggested,
-                        pageSelectionMode: 'auto' as const,
-                      }
-                    : d
-                ),
-              }
-            : p
-        )
-      );
-      setDetailTargetPagesInput(suggested.join(','));
-      setAiDetectingDrawingId(null);
-      toast.success(`AIが図面ページを判定しました（対象: ${suggested.join(', ')}ページ）。必要に応じて手動で修正できます。`);
-    }, 1200);
-  };
-
   const deleteDrawing = (drawing: DrawingRecord) => {
     if (!selectedProjectId) return;
     const url = previewUrlMapRef.current.get(drawing.id);
@@ -1068,10 +987,10 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                     <CardHeader>
                       <CardTitle>図面アップロード</CardTitle>
                         <p className="text-sm text-muted-foreground mt-1">
-                        <strong>1.</strong> PDFをアップロード → <strong>2.</strong> 表示される図面一覧から<strong>解析するファイルを選択</strong> → <strong>3.</strong> その図面の「自動拾い開始」で対象ページを選択（AI自動判定 or 手動指定）→ <strong>4.</strong> 「選択を確定してAI解析を開始」でAI解析を実行します。
+                        PDFをアップロードすると図面が登録されます。
                       </p>
                       <p className="text-sm text-muted-foreground mt-1">
-                        PDF以外・50MB超・200ページ超は受付拒否（理由を表示）。複数アップロードした場合は図面一覧から解析したいファイルを選んでください。図面PDFに他業種用・図面以外のページが含まれる場合はAIで図面ページを自動判定するか、対象ページを手動指定できます。登録時はステータス「未処理」、アップロード操作は監査ログに残ります（対象：図面ID）。
+                        PDF以外・50MB超・200ページ超は受付拒否（理由を表示）。登録時はステータス「未処理」、アップロード操作は監査ログに残ります（対象：図面ID）。
                       </p>
                     </CardHeader>
                     <CardContent className="space-y-4">
@@ -1128,9 +1047,7 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                             )
                           );
                           auditLog({ userId: session?.user?.id ?? '', action: '図面アップロード', targetId: drawingId, result: 'success' });
-                          setSelectPagesDrawing(newDrawing);
-                          setSelectPagesManualInput('');
-                          toast.success(`「${file.name}」を登録しました。どの図面をAIに読み取らせるか選択してください。`);
+                          toast.success(`「${file.name}」を登録しました。自動拾い開始で解析できます。`);
                         }}
                       >
                         <Upload className="w-8 h-8 mx-auto mb-4 text-muted-foreground" />
@@ -1144,298 +1061,13 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                         </Button>
                         <span className="text-sm text-muted-foreground">サンプルの算出結果・見積を即表示</span>
                       </div>
-                      {(selectedProject?.drawings?.length ?? 0) === 0 && (
-                        <p className="text-sm text-muted-foreground mt-4">
-                          ※ PDFをアップロードすると、ここに図面一覧が表示されます。一覧から解析するファイルを選び、「自動拾い開始」で対象ページを指定してAI解析を実行できます。
-                        </p>
-                      )}
-
-                      {/* アップロード後にのみ図面一覧・検索を表示。解析するファイルを選択できる */}
-                      {(selectedProject?.drawings?.length ?? 0) > 0 && (
-                      <Card className="border border-border mt-6">
-                        <CardHeader>
-                          <CardTitle>図面一覧・検索</CardTitle>
-                          <p className="text-sm text-muted-foreground">
-                            アップロードした図面から<strong>解析するファイルを選択</strong>し、行の「自動拾い開始」で対象ページを指定してAI解析を実行できます。キーワード・期間・ステータスで絞り込み。アーカイブは既定で非表示。
-                          </p>
-                          <div className="flex flex-wrap items-center gap-3 mt-3">
-                            <div className="relative flex-1 min-w-[120px] max-w-xs">
-                              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                              <Input placeholder="キーワード（図面名・登録者）" value={drawingListKeyword} onChange={(e) => setDrawingListKeyword(e.target.value)} className="pl-8 h-9" />
-                            </div>
-                            <Select value={drawingListStatus} onValueChange={setDrawingListStatus}>
-                              <SelectTrigger className="w-28 h-9"><SelectValue placeholder="ステータス" /></SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="all">すべて</SelectItem>
-                                <SelectItem value="未処理">未処理</SelectItem>
-                                <SelectItem value="処理中">処理中</SelectItem>
-                                <SelectItem value="完了">完了</SelectItem>
-                                <SelectItem value="エラー">エラー</SelectItem>
-                              </SelectContent>
-                            </Select>
-                            <div className="flex items-center gap-1">
-                              <Input type="date" value={drawingListDateFrom} onChange={(e) => setDrawingListDateFrom(e.target.value)} className="w-36 h-9" placeholder="登録日から" />
-                              <span className="text-muted-foreground">～</span>
-                              <Input type="date" value={drawingListDateTo} onChange={(e) => setDrawingListDateTo(e.target.value)} className="w-36 h-9" placeholder="登録日まで" />
-                            </div>
-                            <label className="flex items-center gap-2 text-sm cursor-pointer">
-                              <input type="checkbox" checked={drawingListShowArchived} onChange={(e) => setDrawingListShowArchived(e.target.checked)} className="rounded" />
-                              アーカイブ含む
-                            </label>
-                          </div>
-                        </CardHeader>
-                        <CardContent className="p-0">
-                          {filteredDrawings.length === 0 ? (
-                            <div className="py-8 text-center text-muted-foreground text-sm">
-                              {selectedProject?.drawings?.length ? '絞り込みに一致する図面がありません。' : '図面がありません。PDFをアップロードしてください。'}
-                            </div>
-                          ) : (
-                            <Table>
-                              <TableHeader>
-                                <TableRow>
-                                  <TableHead>図面名</TableHead>
-                                  <TableHead>登録日</TableHead>
-                                  <TableHead>登録者</TableHead>
-                                  <TableHead>ステータス</TableHead>
-                                  <TableHead>最終更新</TableHead>
-                                  <TableHead className="text-right">操作</TableHead>
-                                </TableRow>
-                              </TableHeader>
-                              <TableBody>
-                                {filteredDrawings.map((d) => (
-                                  <TableRow key={d.id}>
-                                    <TableCell className="font-medium">{d.name}</TableCell>
-                                    <TableCell className="text-sm">{d.registeredAt}</TableCell>
-                                    <TableCell className="text-sm">{d.registeredBy}</TableCell>
-                                    <TableCell>
-                                      <Badge variant={d.status === '完了' ? 'default' : d.status === 'エラー' ? 'destructive' : d.status === '処理中' ? 'secondary' : 'outline'}>
-                                        {d.status}
-                                      </Badge>
-                                      {d.archived && <Badge variant="outline" className="ml-1 text-xs">アーカイブ</Badge>}
-                                    </TableCell>
-                                    <TableCell className="text-sm">{d.lastUpdated}</TableCell>
-                                    <TableCell className="text-right">
-                                      <div className="flex items-center justify-end gap-1 flex-wrap">
-                                        {d.status !== '処理中' && (
-                                          <Button
-                                            variant="ghost"
-                                            size="sm"
-                                            className="h-8 text-xs"
-                                            onClick={() => {
-                                              if ((d.targetPages?.length ?? 0) > 0) {
-                                                startTakeoff(d);
-                                              } else {
-                                                setSelectPagesDrawing(d);
-                                                setSelectPagesManualInput((d.targetPages ?? []).join(','));
-                                              }
-                                            }}
-                                            title={d.targetPages?.length ? '自動拾い開始' : '対象ページを選択してから開始'}
-                                          >
-                                            自動拾い開始
-                                          </Button>
-                                        )}
-                                        {d.status === '処理中' && <span className="text-xs text-muted-foreground">処理中</span>}
-                                        <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => { setResultDrawing(d); }}>結果</Button>
-                                        <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => { setDetailDrawing(d); setDetailTargetPagesInput((d.targetPages ?? []).join(',')); }}>詳細</Button>
-                                        {!d.archived && (
-                                          <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => archiveDrawing(d)}>アーカイブ</Button>
-                                        )}
-                                        <Button variant="ghost" size="sm" className="h-8 text-xs text-destructive" onClick={() => setDeleteConfirmDrawing(d)}>削除</Button>
-                                      </div>
-                                    </TableCell>
-                                  </TableRow>
-                                ))}
-                              </TableBody>
-                            </Table>
-                          )}
-                        </CardContent>
-                      </Card>
-                      )}
-
-                      {/* LLM/誤差閾値設定（更新は監査ログ） */}
-                      <div className="border-t border-border pt-4 mt-4">
-                        <Button variant="ghost" size="sm" onClick={() => setShowTakeoffSettings((v) => !v)}>
-                          {showTakeoffSettings ? '拾い・LLM設定を閉じる' : '拾い・LLM設定'}
-                        </Button>
-                        {showTakeoffSettings && (
-                          <div className="grid gap-2 mt-2 text-sm">
-                            <div className="flex gap-2 items-center">
-                              <Label className="w-24">モデル</Label>
-                              <Input
-                                value={takeoffSettings.llmModel}
-                                onChange={(e) => setTakeoffSettings((s) => ({ ...s, llmModel: e.target.value }))}
-                                className="h-8"
-                              />
-                            </div>
-                            <div className="flex gap-2 items-center">
-                              <Label className="w-24">温度</Label>
-                              <Input
-                                type="number"
-                                step={0.1}
-                                min={0}
-                                max={2}
-                                value={takeoffSettings.llmTemperature}
-                                onChange={(e) => setTakeoffSettings((s) => ({ ...s, llmTemperature: Number(e.target.value) || 0 }))}
-                                className="h-8 w-20"
-                              />
-                            </div>
-                            <div className="flex gap-2 items-center">
-                              <Label className="w-24">誤差閾値%</Label>
-                              <Input
-                                type="number"
-                                value={takeoffSettings.errorThresholdPercent}
-                                onChange={(e) => setTakeoffSettings((s) => ({ ...s, errorThresholdPercent: Number(e.target.value) || 0 }))}
-                                className="h-8 w-20"
-                              />
-                            </div>
-                            <Button
-                              size="sm"
-                              variant="secondary"
-                              onClick={() => {
-                                auditLog({ userId: session?.user?.id ?? '', action: '拾い設定更新', targetId: 'takeoff-settings', result: 'success' });
-                                toast.success('設定を保存しました。変更は監査ログに記録されています。');
-                              }}
-                            >
-                              設定を保存（監査ログに記録）
-                            </Button>
-                          </div>
-                        )}
-                      </div>
                     </CardContent>
                   </Card>
-
-                  {/* アップロード後: どの図面をAIに読み取らせるか選択 */}
-                  <Dialog open={!!selectPagesDrawing} onOpenChange={(open) => { if (!open) { setSelectPagesDrawing(null); setSelectPagesManualInput(''); } }}>
-                    <DialogContent className="max-w-lg">
-                      <DialogHeader>
-                        <DialogTitle>対象の選択</DialogTitle>
-                        <DialogDescription>
-                          解析する<strong>ファイルを選択</strong>し、そのファイルのうちどのページをAIに読み取らせるか指定してください。
-                        </DialogDescription>
-                      </DialogHeader>
-                      <div className="space-y-4 py-2">
-                        {/* 解析するファイルをファイル名で選択 */}
-                        <div>
-                          <Label className="text-sm font-medium">解析するファイル</Label>
-                          {(() => {
-                            const drawingList = (selectedProject?.drawings ?? []).filter((d) => !d.archived);
-                            if (drawingList.length === 0) return null;
-                            if (drawingList.length === 1) {
-                              return (
-                                <p className="mt-1.5 px-3 py-2 rounded-md bg-muted/50 text-sm font-medium">
-                                  {selectPagesDrawing?.name ?? drawingList[0].name}
-                                </p>
-                              );
-                            }
-                            return (
-                              <Select
-                                value={selectPagesDrawing?.id ?? ''}
-                                onValueChange={(id) => {
-                                  const d = drawingList.find((x) => x.id === id);
-                                  if (d) {
-                                    setSelectPagesDrawing(d);
-                                    setSelectPagesManualInput((d.targetPages ?? []).join(', '));
-                                  }
-                                }}
-                              >
-                                <SelectTrigger className="mt-1.5">
-                                  <SelectValue placeholder="ファイルを選択" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {drawingList.map((d) => (
-                                    <SelectItem key={d.id} value={d.id}>
-                                      {d.name}
-                                      {d.targetPages?.length ? ` （対象: ${d.targetPages.join(', ')} ページ）` : ''}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            );
-                          })()}
-                        </div>
-                        {selectPagesDrawing && (() => {
-                          const current = selectedProject?.drawings.find((d) => d.id === selectPagesDrawing.id) ?? selectPagesDrawing;
-                          return (
-                            <>
-                              <div className="border-t border-border pt-3">
-                                <Label className="text-sm font-medium">{current.name} の対象ページ</Label>
-                                <p className="text-xs text-muted-foreground mt-0.5">どのページをAIに読み取らせますか？ 数字で指定するか、AIで自動判定してください。</p>
-                              </div>
-                              <div className="flex flex-wrap items-center gap-2">
-                                <Button
-                                  size="sm"
-                                  variant="secondary"
-                                  disabled={!!aiDetectingDrawingId}
-                                  onClick={() => runAIPageDetection(current)}
-                                >
-                                  {aiDetectingDrawingId === current.id ? '判定中...' : <><Sparkles className="w-4 h-4 mr-1" />AIで対象ページを判定</>}
-                                </Button>
-                                {current.targetPages?.length ? (
-                                  <span className="text-sm text-muted-foreground">対象: {current.targetPages.join(', ')} ページ</span>
-                                ) : null}
-                              </div>
-                              <div>
-                                <Label className="text-sm">ページ番号を手動で指定（例: 1,3,5-7）</Label>
-                                <Input
-                                  placeholder="例: 1,3,5-7"
-                                  className="mt-1"
-                                  value={selectPagesManualInput}
-                                  onChange={(e) => setSelectPagesManualInput(e.target.value)}
-                                />
-                              </div>
-                            </>
-                          );
-                        })()}
-                      </div>
-                      <DialogFooter>
-                        <Button variant="outline" onClick={() => { setSelectPagesDrawing(null); setSelectPagesManualInput(''); }}>
-                          あとで選択する
-                        </Button>
-                        <Button
-                          onClick={() => {
-                            if (!selectPagesDrawing) return;
-                            const current = selectedProject?.drawings.find((d) => d.id === selectPagesDrawing.id) ?? selectPagesDrawing;
-                            const parsed = (() => {
-                              const parts = selectPagesManualInput.trim().split(/[,\s]+/).filter(Boolean);
-                              const pages: number[] = [];
-                              for (const p of parts) {
-                                if (p.includes('-')) {
-                                  const [a, b] = p.split('-').map(Number);
-                                  if (!isNaN(a) && !isNaN(b)) for (let i = a; i <= b; i++) pages.push(i);
-                                } else {
-                                  const n = parseInt(p, 10);
-                                  if (!isNaN(n)) pages.push(n);
-                                }
-                              }
-                              return [...new Set(pages)].sort((a, b) => a - b);
-                            })();
-                            const pagesToUse = parsed.length > 0 ? parsed : (current.targetPages ?? []);
-                            if (!pagesToUse.length) {
-                              toast.error('対象ページを指定するか、「AIで対象ページを判定」を実行してください。');
-                              return;
-                            }
-                            updateDrawingTargetPages(selectPagesDrawing.id, pagesToUse, current.pageSelectionMode ?? 'manual');
-                            setSelectPagesDrawing(null);
-                            setSelectPagesManualInput('');
-                            setResultDrawing(selectPagesDrawing);
-                            setEditingTakeoffItems([]);
-                            toast.success(`対象ページを選択しました。AI解析を開始します。`);
-                            setTimeout(() => startTakeoff(selectPagesDrawing), 0);
-                          }}
-                        >
-                          選択を確定してAI解析を開始
-                        </Button>
-                      </DialogFooter>
-                    </DialogContent>
-                  </Dialog>
 
                   <Dialog
                     open={!!detailDrawing}
                     onOpenChange={(open) => {
-                      if (!open) {
-                        setDetailDrawing(null);
-                        setDetailTargetPagesInput('');
-                      }
+                      if (!open) setDetailDrawing(null);
                     }}
                   >
                     <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
@@ -1444,74 +1076,8 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
                         <DialogDescription>
                           {detailDrawing?.name} — 登録日: {detailDrawing?.registeredAt} / 登録者: {detailDrawing?.registeredBy}
                         </DialogDescription>
-                        <p className="text-sm text-muted-foreground rounded-md bg-muted/50 p-3">
-                          図面PDFには他業種用や図面以外のページが含まれる場合があります。<strong>AIで自動判定</strong>するか、<strong>対象ページを手動指定</strong>して拾い対象を限定してください。
-                        </p>
                       </DialogHeader>
                       <div className="flex-1 overflow-auto space-y-4">
-                        {detailDrawing && (() => {
-                          const currentDrawing = selectedProject?.drawings.find((d) => d.id === detailDrawing.id) ?? detailDrawing;
-                          return (
-                          <div className="space-y-3">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <Button
-                                size="sm"
-                                variant="secondary"
-                                disabled={!!aiDetectingDrawingId}
-                                onClick={() => runAIPageDetection(detailDrawing)}
-                              >
-                                {aiDetectingDrawingId === detailDrawing.id ? (
-                                  <>判定中...</>
-                                ) : (
-                                  <><Sparkles className="w-4 h-4 mr-1" />AIで対象ページを判定</>
-                                )}
-                              </Button>
-                              {currentDrawing.pageSelectionMode && (
-                                <Badge variant="outline" className="text-xs">
-                                  {currentDrawing.pageSelectionMode === 'auto' ? 'AI判定済み' : '手動指定'}
-                                </Badge>
-                              )}
-                              {currentDrawing.targetPages?.length ? (
-                                <span className="text-xs text-muted-foreground">
-                                  対象: {currentDrawing.targetPages.join(', ')} ページ
-                                </span>
-                              ) : null}
-                            </div>
-                            <div className="flex items-end gap-2">
-                              <div className="flex-1">
-                                <Label className="text-sm font-medium">対象ページを手動指定</Label>
-                                <Input
-                                  placeholder="例: 1,3,5-7（カンマ・ハイフン区切り）"
-                                  value={detailTargetPagesInput}
-                                  onChange={(e) => setDetailTargetPagesInput(e.target.value)}
-                                  className="mt-1"
-                                />
-                              </div>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => {
-                                  const parts = detailTargetPagesInput.trim().split(/[,\s]+/).filter(Boolean);
-                                  const pages: number[] = [];
-                                  for (const p of parts) {
-                                    if (p.includes('-')) {
-                                      const [a, b] = p.split('-').map(Number);
-                                      if (!isNaN(a) && !isNaN(b)) for (let i = a; i <= b; i++) pages.push(i);
-                                    } else {
-                                      const n = parseInt(p, 10);
-                                      if (!isNaN(n)) pages.push(n);
-                                    }
-                                  }
-                                  updateDrawingTargetPages(detailDrawing.id, [...new Set(pages)].sort((a, b) => a - b), 'manual');
-                                  toast.success('対象ページを保存しました');
-                                }}
-                              >
-                                反映
-                              </Button>
-                            </div>
-                          </div>
-                          );
-                        })()}
                         <div>
                           <Label className="text-sm font-medium">PDFプレビュー</Label>
                           <div className="border border-border rounded-md bg-muted/30 mt-1 min-h-[200px] flex items-center justify-center">

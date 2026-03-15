@@ -55,6 +55,6 @@
     },
     server: {
       port: 3000,
-      open: false, // Cursor内ブラウザで開く場合は open を false に
+      open: true, // 起動時にシステムの既定ブラウザで開く（Cursor外で見る用）
     },
   });

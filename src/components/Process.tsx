@@ -20,6 +20,8 @@ interface GanttItem {
   id: number;
   project: string;
   location: string;
+  /** 規模（自由入力） */
+  scale?: string;
   assignee: string;
   startDate: string;
   endDate: string;
@@ -119,6 +121,7 @@ const Process: React.FC<ProcessProps> = () => {
   const [newProjectData, setNewProjectData] = useState({
     project: '',
     location: '',
+    scale: '',
     assignee: [] as string[],
     startDate: '',
     endDate: '',
@@ -272,6 +275,7 @@ const Process: React.FC<ProcessProps> = () => {
     setNewProjectData({
       project: '',
       location: '',
+      scale: '',
       assignee: [],
       startDate: today.toISOString().split('T')[0],
       endDate: end.toISOString().split('T')[0],
@@ -293,6 +297,7 @@ const Process: React.FC<ProcessProps> = () => {
       id: Date.now(),
       project: newProjectData.project,
       location: newProjectData.location,
+      scale: newProjectData.scale.trim() || undefined,
       assignee: assigneeStr,
       startDate: newProjectData.startDate,
       endDate: newProjectData.endDate,
@@ -753,6 +758,10 @@ const Process: React.FC<ProcessProps> = () => {
               <Input value={newProjectData.location} onChange={(e) => setNewProjectData(prev => ({ ...prev, location: e.target.value }))} placeholder="例：東京都品川区〇〇1-2-3" className="w-full" />
             </div>
             <div className="space-y-2">
+              <label className="text-sm font-medium">規模（任意）</label>
+              <Input value={newProjectData.scale} onChange={(e) => setNewProjectData(prev => ({ ...prev, scale: e.target.value }))} placeholder="例：延床面積 100m²" className="w-full" />
+            </div>
+            <div className="space-y-2">
               <label className="text-sm font-medium">現場担当者（任意・1名のみ）</label>
               <Select value={newProjectData.assignee[0] || '_none_'} onValueChange={(v) => setNewProjectData(prev => ({ ...prev, assignee: v === '_none_' ? [] : [v] }))}>
                 <SelectTrigger className="w-full"><SelectValue placeholder="未割当" /></SelectTrigger>
@@ -813,6 +822,10 @@ const Process: React.FC<ProcessProps> = () => {
               <div>
                 <Label className="text-sm flex items-center"><Building2 className="w-4 h-4 mr-1" />場所</Label>
                 <Input value={selectedProject.location || ''} onChange={(e) => updateGanttItem(selectedProject.id, 'location', e.target.value)} placeholder="現場の場所" className="mt-1" />
+              </div>
+              <div>
+                <Label className="text-sm">規模（任意）</Label>
+                <Input value={selectedProject.scale || ''} onChange={(e) => updateGanttItem(selectedProject.id, 'scale', e.target.value)} placeholder="例: 延床面積 100m²" className="mt-1" />
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>

@@ -332,7 +332,8 @@ export default function App() {
           displayName: e.name,
           role: e.role === 'owner' || e.role === 'admin' ? 'owner' : 'field',
           isActive: true,
-          passwordHash: 'demo' as const,
+          // 従業員にパスワードが未設定の場合はデモ用に "password" でログイン可能
+          passwordHash: e.password ?? 'password',
         })),
     [employees]
   );
