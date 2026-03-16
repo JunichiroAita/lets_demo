@@ -74,6 +74,8 @@ const Process: React.FC<ProcessProps> = () => {
   const [addingToCell, setAddingToCell] = useState<{ personId: number; day: typeof weekdayKeys[number] } | null>(null);
   const [selectedProjectForCell, setSelectedProjectForCell] = useState<string>('new');
   const [newProjectName, setNewProjectName] = useState('');
+  /** 人員カレンダーでクリックした案件（taskId なしの手動追加分）の詳細表示用 */
+  const [calendarAssignmentDetail, setCalendarAssignmentDetail] = useState<{ assignment: ProjectAssignment; personId: number; personName: string; dayKey: typeof weekdayKeys[number] } | null>(null);
   const [draggedProject, setDraggedProject] = useState<any>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [dragType, setDragType] = useState<'move' | 'resize-left' | 'resize-right' | null>(null);
@@ -508,7 +510,18 @@ const Process: React.FC<ProcessProps> = () => {
     };
   }));
 
-  const renderCalendarCard = (a: ProjectAssignment, personId: number, day: typeof weekdayKeys[number]) => {
+  /** 案件名クリック時: taskId があればタスク詳細モーダル、なければ簡易案件詳細モーダルを開く */
+  const openAssignmentDetail = (a: ProjectAssignment, person: CalendarPerson, dayKey: typeof weekdayKeys[number]) => {
+    if (a.taskId != null) {
+      setSelectedProjectId(a.taskId);
+      setProjectModalOpen(true);
+    } else {
+      setCalendarAssignmentDetail({ assignment: a, personId: person.id, personName: person.assignee, dayKey });
+    }
+  };
+
+  const renderCalendarCard = (a: ProjectAssignment, person: CalendarPerson, day: typeof weekdayKeys[number]) => {
+    const personId = person.id;
     const isEditing = editingCell === `${personId}-${day}-${a.id}`;
     return (
       <div key={a.id} className="group relative mb-1 p-2 rounded text-white text-xs cursor-pointer hover:shadow-md" style={{ backgroundColor: a.color }}>
@@ -516,9 +529,9 @@ const Process: React.FC<ProcessProps> = () => {
           {isEditing ? (
             <Input value={a.name} onChange={(e) => updateProjectInCell(personId, day, a.id, 'name', e.target.value)} onBlur={() => setEditingCell(null)} onKeyDown={(e) => e.key === 'Enter' && setEditingCell(null)} className="text-xs h-6 bg-white/20 border-white/30 text-white w-full" autoFocus />
           ) : (
-            <span className="flex-1 font-medium" onClick={() => setEditingCell(`${personId}-${day}-${a.id}`)}>{a.name}</span>
+            <span className="flex-1 font-medium" onClick={(e) => { e.stopPropagation(); openAssignmentDetail(a, person, day); }}>{a.name}</span>
           )}
-          <Button variant="ghost" size="sm" className="w-4 h-4 p-0 opacity-0 group-hover:opacity-100 hover:bg-white/20" onClick={() => removeProjectFromCell(personId, day, a.id)}><X className="w-3 h-3" /></Button>
+          <Button variant="ghost" size="sm" className="w-4 h-4 p-0 opacity-0 group-hover:opacity-100 hover:bg-white/20" onClick={(e) => { e.stopPropagation(); removeProjectFromCell(personId, day, a.id); }}><X className="w-3 h-3" /></Button>
         </div>
       </div>
     );
@@ -597,7 +610,7 @@ const Process: React.FC<ProcessProps> = () => {
                           return (
                             <TableCell key={dateStr} className={`p-1 sm:p-2 min-h-16 sm:min-h-20 align-top min-w-[4rem] sm:min-w-24 ${isWeekend ? 'bg-muted/30' : ''}`}>
                               <div className="space-y-1 min-h-12 sm:min-h-16">
-                                {assignments.map((a) => renderCalendarCard(a, person.id, dayKey))}
+                                {assignments.map((a) => renderCalendarCard(a, person, dayKey))}
                                 {projectFilter === 'all' && (
                                   <Button variant="outline" size="sm" className="w-full h-6 text-[10px] sm:text-xs opacity-0 hover:opacity-100 touch-manipulation" onClick={() => openAddProjectDialog(person.id, dayKey)}>
                                     <Plus className="w-3 h-3 mr-0.5 sm:mr-1" />追加
@@ -876,6 +889,75 @@ const Process: React.FC<ProcessProps> = () => {
                 </Select>
               </div>
               <p className="text-xs text-muted-foreground">終了日が開始日より前の場合は保存できません。変更は自動保存されます。</p>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={calendarAssignmentDetail !== null} onOpenChange={(open) => !open && setCalendarAssignmentDetail(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>タスク詳細</DialogTitle>
+            <DialogDescription>名称・開始・終了・担当を編集できます。終了が開始より前の場合は保存できません。</DialogDescription>
+          </DialogHeader>
+          {calendarAssignmentDetail && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <div className="w-4 h-4 rounded" style={{ backgroundColor: calendarAssignmentDetail.assignment.color }} />
+                  <h3 className="text-lg font-medium">{calendarAssignmentDetail.assignment.name}</h3>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-destructive hover:text-destructive"
+                  onClick={() => {
+                    if (confirm('このタスクを削除しますか？')) {
+                      removeProjectFromCell(calendarAssignmentDetail.personId, calendarAssignmentDetail.dayKey, calendarAssignmentDetail.assignment.id);
+                      setCalendarAssignmentDetail(null);
+                      toast.success('プロジェクトを削除しました');
+                    }
+                  }}
+                >
+                  <Trash2 className="w-4 h-4 mr-1" />削除
+                </Button>
+              </div>
+              <div>
+                <Label className="text-sm">タスク名</Label>
+                <Input
+                  value={calendarAssignmentDetail.assignment.name}
+                  onChange={(e) => {
+                    const name = e.target.value;
+                    updateProjectInCell(calendarAssignmentDetail.personId, calendarAssignmentDetail.dayKey, calendarAssignmentDetail.assignment.id, 'name', name);
+                    setCalendarAssignmentDetail(prev => prev ? { ...prev, assignment: { ...prev.assignment, name } } : null);
+                  }}
+                  placeholder="名称"
+                  className="mt-1"
+                />
+              </div>
+              <div>
+                <Label className="text-sm flex items-center"><Building2 className="w-4 h-4 mr-1" />場所</Label>
+                <Input value="" placeholder="現場の場所" className="mt-1 bg-muted" readOnly />
+              </div>
+              <div>
+                <Label className="text-sm">規模（任意）</Label>
+                <Input value="" placeholder="例: 延床面積 100m²" className="mt-1 bg-muted" readOnly />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label className="text-sm">開始日</Label>
+                  <Input type="date" value="" className="mt-1 bg-muted" readOnly />
+                </div>
+                <div>
+                  <Label className="text-sm">終了日</Label>
+                  <Input type="date" value="" className="mt-1 bg-muted" readOnly />
+                </div>
+              </div>
+              <div>
+                <Label className="text-sm">現場担当者（1名・任意）</Label>
+                <Input value={calendarAssignmentDetail.personName} className="mt-1 bg-muted" readOnly />
+              </div>
+              <p className="text-xs text-muted-foreground">カレンダーに手動追加した割当のため、タスク名のみ編集できます。場所・期間・担当の変更は工程表で行ってください。</p>
             </div>
           )}
         </DialogContent>
