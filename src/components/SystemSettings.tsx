@@ -6,11 +6,14 @@ import { Label } from './ui/label';
 import { Textarea } from './ui/textarea';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from './ui/dialog';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Badge } from './ui/badge';
-import { Settings2, Package, TrendingUp, UserCheck, Plus, Edit, Search, History, ScrollText } from 'lucide-react';
+import { Settings2, Package, TrendingUp, UserCheck, Plus, Edit, Search, History, ScrollText, Trash2, Layers, CalendarDays } from 'lucide-react';
 import { toast } from 'sonner';
 import type { MaterialRecord } from '../App';
+import type { PurchasePriceObjectRecord, PurchasePriceObjectEntry } from '../types/purchasePriceObject';
+import { resolveMaterialPurchasePrice } from '../lib/resolveMaterialPurchasePrice';
 import { getLoginHistory, useAuth } from '../contexts/AuthContext';
 import { useAudit } from '../contexts/AuditContext';
 
@@ -19,6 +22,10 @@ interface SystemSettingsProps {
   setMaterials?: React.Dispatch<React.SetStateAction<MaterialRecord[]>>;
   employees?: EmployeeRecord[];
   setEmployees?: React.Dispatch<React.SetStateAction<EmployeeRecord[]>>;
+  purchasePriceObjects?: PurchasePriceObjectRecord[];
+  setPurchasePriceObjects?: React.Dispatch<React.SetStateAction<PurchasePriceObjectRecord[]>>;
+  activePurchasePriceObjectId?: string | null;
+  setActivePurchasePriceObjectId?: React.Dispatch<React.SetStateAction<string | null>>;
 }
 
 // 基本設定（税率・税端数・休憩既定）
@@ -36,6 +43,8 @@ interface BasicSettings {
   break2End: string;
   break3Start: string;
   break3End: string;
+  /** 会社全体の休日（YYYY-MM-DD）。勤怠の休み登録の参考・集計に利用できます。 */
+  companyHolidays: string[];
 }
 
 // 標準歩掛（係数・有効フラグ）
@@ -59,7 +68,7 @@ export interface EmployeeRecord {
   password?: string;
   role: string;
   position?: string;   // 役職（未入力可）
-  hireDate?: string;   // 入社日（未入力可）
+  hireDate: string;    // 入社日（必須）
   isActive: boolean;
 }
 
@@ -77,6 +86,7 @@ const defaultBasic: BasicSettings = {
   break2End: '13:00',
   break3Start: '15:00',
   break3End: '15:30',
+  companyHolidays: [],
 };
 
 const initialRates: StandardRate[] = [
@@ -85,11 +95,20 @@ const initialRates: StandardRate[] = [
 ];
 
 const initialEmployees: EmployeeRecord[] = [
-  { id: 'E1', employeeNumber: 1, name: '管理者', loginId: 'admin', role: 'owner', isActive: true },
-  { id: 'E2', employeeNumber: 2, name: '現場', loginId: 'field1', role: 'field', isActive: true },
+  { id: 'E1', employeeNumber: 1, name: '管理者', loginId: 'admin', role: 'owner', hireDate: '2020-04-01', isActive: true },
+  { id: 'E2', employeeNumber: 2, name: '現場', loginId: 'field1', role: 'field', hireDate: '2021-06-15', isActive: true },
 ];
 
-const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMaterials, employees: propEmployees, setEmployees: setPropEmployees }) => {
+const SystemSettings: React.FC<SystemSettingsProps> = ({
+  materials = [],
+  setMaterials,
+  employees: propEmployees,
+  setEmployees: setPropEmployees,
+  purchasePriceObjects = [],
+  setPurchasePriceObjects = () => {},
+  activePurchasePriceObjectId = null,
+  setActivePurchasePriceObjectId = () => {},
+}) => {
   const { getLogs: getAuditLogs, log: auditLog } = useAudit();
   const { session } = useAuth();
   const userId = session?.user?.id ?? '';
@@ -99,10 +118,19 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
   const [basicSettings, setBasicSettings] = useState<BasicSettings>(() => {
     try {
       const saved = localStorage.getItem('lets_basic_settings');
-      if (saved) return { ...defaultBasic, ...JSON.parse(saved) };
+      if (saved) {
+        const parsed = JSON.parse(saved) as Partial<BasicSettings>;
+        return {
+          ...defaultBasic,
+          ...parsed,
+          companyHolidays: Array.isArray(parsed.companyHolidays) ? [...parsed.companyHolidays] : [],
+        };
+      }
     } catch (_) {}
     return defaultBasic;
   });
+
+  const [newCompanyHolidayDate, setNewCompanyHolidayDate] = useState('');
 
   const [rates, setRates] = useState<StandardRate[]>(initialRates);
   const employees = propEmployees ?? [];
@@ -111,8 +139,16 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
   // 材料ダイアログ
   const [materialDialogOpen, setMaterialDialogOpen] = useState(false);
   const [editingMaterial, setEditingMaterial] = useState<MaterialRecord | null>(null);
-  const [materialForm, setMaterialForm] = useState({ name: '', code: '', category: '建材', unit: '枚', standardPrice: 0, memo: '', isActive: true });
+  const [materialForm, setMaterialForm] = useState({ name: '', code: '', category: '建材', unit: '枚', standardPrice: 0, sellingPrice: 0, memo: '', isActive: true });
   const [materialSearch, setMaterialSearch] = useState('');
+  const [materialsSubTab, setMaterialsSubTab] = useState<'master' | 'ppo'>('master');
+  const [ppoDialogOpen, setPpoDialogOpen] = useState(false);
+  const [editingPpo, setEditingPpo] = useState<PurchasePriceObjectRecord | null>(null);
+  const [ppoForm, setPpoForm] = useState<{ name: string; memo: string; entries: PurchasePriceObjectEntry[] }>({
+    name: '',
+    memo: '',
+    entries: [],
+  });
 
   // 歩掛ダイアログ
   const [rateDialogOpen, setRateDialogOpen] = useState(false);
@@ -128,11 +164,38 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
 
   const saveBasicSettings = () => {
     try {
-      localStorage.setItem('lets_basic_settings', JSON.stringify(basicSettings));
+      const sortedHolidays = [...new Set(basicSettings.companyHolidays.filter(Boolean))].sort();
+      const payload = { ...basicSettings, companyHolidays: sortedHolidays };
+      localStorage.setItem('lets_basic_settings', JSON.stringify(payload));
+      setBasicSettings(payload);
       toast.success('基本設定を保存しました');
     } catch {
       toast.error('保存に失敗しました');
     }
+  };
+
+  const addCompanyHolidayRow = () => {
+    const d = newCompanyHolidayDate.trim();
+    if (!d || !/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+      toast.error('日付を選択してください');
+      return;
+    }
+    if (basicSettings.companyHolidays.includes(d)) {
+      toast.error('すでに登録されています');
+      return;
+    }
+    setBasicSettings((s) => ({
+      ...s,
+      companyHolidays: [...s.companyHolidays, d].sort(),
+    }));
+    setNewCompanyHolidayDate('');
+  };
+
+  const removeCompanyHolidayRow = (date: string) => {
+    setBasicSettings((s) => ({
+      ...s,
+      companyHolidays: s.companyHolidays.filter((x) => x !== date),
+    }));
   };
 
   const filteredMaterials = useMemo(() => {
@@ -172,12 +235,13 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
         category: m.category,
         unit: m.unit,
         standardPrice: m.standardPrice,
+        sellingPrice: m.sellingPrice ?? 0,
         memo: m.memo || '',
         isActive: m.isActive !== false,
       });
     } else {
       setEditingMaterial(null);
-      setMaterialForm({ name: '', code: '', category: '建材', unit: '枚', standardPrice: 0, memo: '', isActive: true });
+      setMaterialForm({ name: '', code: '', category: '建材', unit: '枚', standardPrice: 0, sellingPrice: 0, memo: '', isActive: true });
     }
     setMaterialDialogOpen(true);
   };
@@ -188,12 +252,17 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
       return;
     }
     if (materialForm.standardPrice === '' || materialForm.standardPrice === undefined || (typeof materialForm.standardPrice === 'string' && materialForm.standardPrice.trim() === '')) {
-      toast.error('単価を入力してください（0円は登録可、空欄は不可）');
+      toast.error('基準仕入単価を入力してください（0円は登録可、空欄は不可）');
       return;
     }
     const price = Number(materialForm.standardPrice);
     if (Number.isNaN(price) || price < 0) {
-      toast.error('単価は0以上の数値を入力してください');
+      toast.error('基準仕入単価は0以上の数値を入力してください');
+      return;
+    }
+    const sell = Number(materialForm.sellingPrice);
+    if (Number.isNaN(sell) || sell < 0) {
+      toast.error('販売単価は0以上の数値を入力してください');
       return;
     }
     if (!setMaterials) return;
@@ -208,6 +277,7 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
                 category: materialForm.category,
                 unit: materialForm.unit,
                 standardPrice: price,
+                sellingPrice: sell,
                 memo: materialForm.memo || undefined,
                 isActive: materialForm.isActive,
               }
@@ -226,6 +296,7 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
           category: materialForm.category,
           unit: materialForm.unit,
           standardPrice: price,
+          sellingPrice: sell,
           memo: materialForm.memo || undefined,
           isActive: materialForm.isActive !== false,
         },
@@ -233,6 +304,68 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
       toast.success('材料を追加しました');
     }
     setMaterialDialogOpen(false);
+  };
+
+  const openPpoDialog = (ppo?: PurchasePriceObjectRecord) => {
+    if (ppo) {
+      setEditingPpo(ppo);
+      setPpoForm({ name: ppo.name, memo: ppo.memo ?? '', entries: ppo.entries.map((e) => ({ ...e })) });
+    } else {
+      setEditingPpo(null);
+      setPpoForm({ name: '', memo: '', entries: [] });
+    }
+    setPpoDialogOpen(true);
+  };
+
+  const savePpo = () => {
+    if (!ppoForm.name.trim()) {
+      toast.error('仕入れ価格オブジェクト名を入力してください');
+      return;
+    }
+    const validIds = new Set(materials.map((m) => m.id));
+    const rawEntries = ppoForm.entries
+      .filter((e) => validIds.has(e.materialId))
+      .map((e) => ({ materialId: e.materialId, purchasePrice: Math.max(0, Number(e.purchasePrice) || 0) }));
+    const byMat = new Map<string, PurchasePriceObjectEntry>();
+    rawEntries.forEach((e) => byMat.set(e.materialId, e));
+    const entries = Array.from(byMat.values());
+    if (editingPpo) {
+      setPurchasePriceObjects((prev) =>
+        prev.map((o) => (o.id === editingPpo.id ? { ...o, name: ppoForm.name.trim(), memo: ppoForm.memo.trim() || undefined, entries } : o))
+      );
+      auditLog({ userId, action: '仕入れ価格オブジェクト更新', targetId: editingPpo.id, result: 'success' });
+      toast.success('仕入れ価格オブジェクトを更新しました');
+    } else {
+      const id = `ppo-${Date.now()}`;
+      setPurchasePriceObjects((prev) => [...prev, { id, name: ppoForm.name.trim(), memo: ppoForm.memo.trim() || undefined, entries }]);
+      auditLog({ userId, action: '仕入れ価格オブジェクト追加', targetId: id, result: 'success' });
+      toast.success('仕入れ価格オブジェクトを追加しました');
+    }
+    setPpoDialogOpen(false);
+  };
+
+  const deletePpo = (id: string) => {
+    if (!confirm('この仕入れ価格オブジェクトを削除しますか？')) return;
+    setPurchasePriceObjects((prev) => {
+      const next = prev.filter((o) => o.id !== id);
+      setActivePurchasePriceObjectId((cur) => (cur === id ? next[0]?.id ?? null : cur));
+      return next;
+    });
+    auditLog({ userId, action: '仕入れ価格オブジェクト削除', targetId: id, result: 'success' });
+    toast.success('削除しました');
+  };
+
+  const addPpoEntry = () => {
+    const used = new Set(ppoForm.entries.map((e) => e.materialId));
+    const next = materials.find((m) => !used.has(m.id) && m.isActive !== false);
+    if (!next) {
+      toast.error('追加できる材料がありません（すべて登録済み、または材料マスタが空です）');
+      return;
+    }
+    setPpoForm((f) => ({
+      ...f,
+      entries: [...f.entries, { materialId: next.id, purchasePrice: next.standardPrice }],
+    }));
   };
 
   const openRateDialog = (r?: StandardRate) => {
@@ -312,6 +445,10 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
       toast.error('ログインIDを入力してください');
       return;
     }
+    if (!employeeForm.hireDate.trim()) {
+      toast.error('入社日を入力してください');
+      return;
+    }
     if (editingEmployee) {
       setEmployees((prev) =>
         prev.map((x) =>
@@ -323,7 +460,7 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
                 ...(employeeForm.password !== '' && { password: employeeForm.password }),
                 role: employeeForm.role,
                 position: employeeForm.position.trim() || undefined,
-                hireDate: employeeForm.hireDate.trim() || undefined,
+                hireDate: employeeForm.hireDate.trim(),
                 isActive: employeeForm.isActive,
               }
             : x
@@ -343,7 +480,7 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
           ...(employeeForm.password !== '' && { password: employeeForm.password }),
           role: employeeForm.role,
           position: employeeForm.position.trim() || undefined,
-          hireDate: employeeForm.hireDate.trim() || undefined,
+          hireDate: employeeForm.hireDate.trim(),
           isActive: employeeForm.isActive,
         },
       ]);
@@ -456,6 +593,52 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
             </div>
             <p className="text-xs text-muted-foreground">例: 10:00～10:30 / 12:00～13:00 / 15:00～15:30（合計2時間/日）</p>
           </div>
+          <div className="space-y-3 rounded-lg border p-4 bg-muted/20">
+            <div className="flex items-center gap-2">
+              <CalendarDays className="w-4 h-4 text-muted-foreground" />
+              <Label className="text-base">会社の休日</Label>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              創立記念日や年末年始など、会社全体の休日を登録します。勤怠の「従業員別サマリー」から休みを登録する際の目安にもなります。
+            </p>
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">日付を追加</Label>
+                <Input
+                  type="date"
+                  value={newCompanyHolidayDate}
+                  onChange={(e) => setNewCompanyHolidayDate(e.target.value)}
+                  className="w-44"
+                />
+              </div>
+              <Button type="button" variant="secondary" onClick={addCompanyHolidayRow}>
+                <Plus className="w-4 h-4 mr-1" />
+                一覧に追加
+              </Button>
+            </div>
+            {basicSettings.companyHolidays.length === 0 ? (
+              <p className="text-sm text-muted-foreground">未登録です。日付を選んで「一覧に追加」してください。</p>
+            ) : (
+              <ul className="flex flex-wrap gap-2">
+                {basicSettings.companyHolidays.map((d) => (
+                  <li
+                    key={d}
+                    className="inline-flex items-center gap-1 rounded-md border bg-background px-2 py-1 text-sm tabular-nums"
+                  >
+                    {d}
+                    <button
+                      type="button"
+                      className="rounded p-0.5 text-muted-foreground hover:text-destructive"
+                      onClick={() => removeCompanyHolidayRow(d)}
+                      aria-label={`${d} を削除`}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
           <div className="space-y-2">
             <Label>メモ</Label>
             <Textarea
@@ -473,61 +656,306 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
 
   const renderMaterialsTab = () => (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-4">
-        <div className="relative flex-1 max-w-sm">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-          <Input
-            placeholder="材料名・コード・カテゴリで検索"
-            value={materialSearch}
-            onChange={(e) => setMaterialSearch(e.target.value)}
-            className="pl-8"
-          />
-        </div>
-        <Button onClick={() => openMaterialDialog()} disabled={!setMaterials}>
-          <Plus className="w-4 h-4 mr-2" />
-          新規追加
-        </Button>
-      </div>
-      <Card className="border border-border">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>コード</TableHead>
-              <TableHead>材料名</TableHead>
-              <TableHead>カテゴリ</TableHead>
-              <TableHead>単位</TableHead>
-              <TableHead className="text-right">標準単価（円）</TableHead>
-              <TableHead className="w-20">有効</TableHead>
-              <TableHead className="w-20" />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {filteredMaterials.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
-                  データがありません
-                </TableCell>
-              </TableRow>
-            ) : (
-              filteredMaterials.map((m) => (
-                <TableRow key={m.id}>
-                  <TableCell className="font-mono text-sm">{m.code}</TableCell>
-                  <TableCell>{m.name}</TableCell>
-                  <TableCell>{m.category}</TableCell>
-                  <TableCell>{m.unit}</TableCell>
-                  <TableCell className="text-right">¥{m.standardPrice.toLocaleString()}</TableCell>
-                  <TableCell>{m.isActive !== false ? <Badge variant="outline">有効</Badge> : <Badge variant="secondary">無効</Badge>}</TableCell>
-                  <TableCell>
-                    <Button variant="ghost" size="sm" onClick={() => openMaterialDialog(m)} disabled={!setMaterials}>
-                      <Edit className="w-4 h-4" />
-                    </Button>
-                  </TableCell>
+      <Tabs value={materialsSubTab} onValueChange={(v) => setMaterialsSubTab(v as 'master' | 'ppo')} className="w-full">
+        <TabsList className="grid w-full max-w-xl grid-cols-2 h-10">
+          <TabsTrigger value="master" className="gap-2">
+            <Package className="w-4 h-4" />
+            材料マスタ
+          </TabsTrigger>
+          <TabsTrigger value="ppo" className="gap-2">
+            <Layers className="w-4 h-4" />
+            仕入れ価格オブジェクト
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="master" className="space-y-4 mt-4">
+          <p className="text-sm text-muted-foreground">
+            品目の基本情報と販売単価・基準仕入単価を登録します。実際の仕入単価は「仕入れ価格オブジェクト」で登録した単価が適用されます（未登録の材料は基準仕入単価にフォールバックします）。
+          </p>
+          <div className="flex items-center justify-between gap-4">
+            <div className="relative flex-1 max-w-sm">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input
+                placeholder="材料名・コード・カテゴリで検索"
+                value={materialSearch}
+                onChange={(e) => setMaterialSearch(e.target.value)}
+                className="pl-8"
+              />
+            </div>
+            <Button onClick={() => openMaterialDialog()} disabled={!setMaterials}>
+              <Plus className="w-4 h-4 mr-2" />
+              新規追加
+            </Button>
+          </div>
+          <Card className="border border-border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>コード</TableHead>
+                  <TableHead>材料名</TableHead>
+                  <TableHead>カテゴリ</TableHead>
+                  <TableHead>単位</TableHead>
+                  <TableHead className="text-right">適用中の仕入単価</TableHead>
+                  <TableHead className="text-right">基準仕入単価</TableHead>
+                  <TableHead className="text-right">販売単価（円）</TableHead>
+                  <TableHead className="w-20">有効</TableHead>
+                  <TableHead className="w-20" />
                 </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </Card>
+              </TableHeader>
+              <TableBody>
+                {filteredMaterials.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
+                      データがありません
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  filteredMaterials.map((m) => {
+                    const effective = resolveMaterialPurchasePrice(
+                      m.id,
+                      m.standardPrice,
+                      purchasePriceObjects,
+                      activePurchasePriceObjectId
+                    );
+                    const fromObject =
+                      activePurchasePriceObjectId &&
+                      purchasePriceObjects
+                        .find((o) => o.id === activePurchasePriceObjectId)
+                        ?.entries.some((e) => e.materialId === m.id);
+                    return (
+                      <TableRow key={m.id}>
+                        <TableCell className="font-mono text-sm">{m.code}</TableCell>
+                        <TableCell>{m.name}</TableCell>
+                        <TableCell>{m.category}</TableCell>
+                        <TableCell>{m.unit}</TableCell>
+                        <TableCell className="text-right">
+                          <span className="tabular-nums">¥{effective.toLocaleString()}</span>
+                          {fromObject && (
+                            <Badge variant="secondary" className="ml-2 text-[10px]">
+                              オブジェクト
+                            </Badge>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right text-muted-foreground tabular-nums">
+                          ¥{m.standardPrice.toLocaleString()}
+                        </TableCell>
+                        <TableCell className="text-right">¥{(m.sellingPrice ?? 0).toLocaleString()}</TableCell>
+                        <TableCell>{m.isActive !== false ? <Badge variant="outline">有効</Badge> : <Badge variant="secondary">無効</Badge>}</TableCell>
+                        <TableCell>
+                          <Button variant="ghost" size="sm" onClick={() => openMaterialDialog(m)} disabled={!setMaterials}>
+                            <Edit className="w-4 h-4" />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
+                )}
+              </TableBody>
+            </Table>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="ppo" className="space-y-4 mt-4">
+          <p className="text-sm text-muted-foreground">
+            仕入れ価格オブジェクトに材料と仕入単価を登録し、一覧から適用するオブジェクトを選びます。適用中のオブジェクトに登録された材料は、その単価で見積などに反映されます（登録のない材料は材料マスタの基準仕入単価を使います）。
+          </p>
+          <Card className="border border-border">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">適用中の仕入れ価格オブジェクト</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <Label className="text-muted-foreground">システム全体で参照する仕入単価セット</Label>
+              <Select
+                value={activePurchasePriceObjectId ?? '__none__'}
+                onValueChange={(v) => setActivePurchasePriceObjectId(v === '__none__' ? null : v)}
+              >
+                <SelectTrigger className="max-w-md">
+                  <SelectValue placeholder="選択してください" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">なし（すべて基準仕入単価）</SelectItem>
+                  {purchasePriceObjects.map((o) => (
+                    <SelectItem key={o.id} value={o.id}>
+                      {o.name}（{o.entries.length}件）
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </CardContent>
+          </Card>
+
+          <div className="flex justify-end">
+            <Button onClick={() => openPpoDialog()}>
+              <Plus className="w-4 h-4 mr-2" />
+              仕入れ価格オブジェクトを追加
+            </Button>
+          </div>
+
+          <Card className="border border-border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>オブジェクト名</TableHead>
+                  <TableHead>登録材料数</TableHead>
+                  <TableHead className="w-28">適用中</TableHead>
+                  <TableHead className="w-32" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {purchasePriceObjects.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={4} className="text-center text-muted-foreground py-8">
+                      仕入れ価格オブジェクトがありません。追加してください。
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  purchasePriceObjects.map((o) => (
+                    <TableRow key={o.id}>
+                      <TableCell className="font-medium">{o.name}</TableCell>
+                      <TableCell>{o.entries.length}件</TableCell>
+                      <TableCell>
+                        {activePurchasePriceObjectId === o.id ? (
+                          <Badge>適用中</Badge>
+                        ) : (
+                          <span className="text-muted-foreground text-sm">—</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex gap-1">
+                          <Button variant="ghost" size="sm" onClick={() => openPpoDialog(o)}>
+                            <Edit className="w-4 h-4" />
+                          </Button>
+                          <Button variant="ghost" size="sm" className="text-destructive" onClick={() => deletePpo(o.id)}>
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </Card>
+        </TabsContent>
+      </Tabs>
+
+      <Dialog open={ppoDialogOpen} onOpenChange={setPpoDialogOpen}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{editingPpo ? '仕入れ価格オブジェクトの編集' : '仕入れ価格オブジェクトの追加'}</DialogTitle>
+            <DialogDescription>
+              材料マスタから品目を選び、このオブジェクトでの仕入単価を登録します。同じ材料を複数のオブジェクトで異なる単価にできます。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label>オブジェクト名 *</Label>
+              <Input
+                value={ppoForm.name}
+                onChange={(e) => setPpoForm((f) => ({ ...f, name: e.target.value }))}
+                placeholder="例: 大口仕入価格"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>メモ</Label>
+              <Input
+                value={ppoForm.memo}
+                onChange={(e) => setPpoForm((f) => ({ ...f, memo: e.target.value }))}
+                placeholder="任意"
+              />
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label>登録材料と仕入単価</Label>
+                <Button type="button" variant="outline" size="sm" onClick={addPpoEntry}>
+                  <Plus className="w-4 h-4 mr-1" />
+                  行を追加
+                </Button>
+              </div>
+              {ppoForm.entries.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-4">「行を追加」から材料を登録してください。</p>
+              ) : (
+                <div className="rounded-md border border-border overflow-hidden">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>材料</TableHead>
+                        <TableHead className="w-36">仕入単価（円）</TableHead>
+                        <TableHead className="w-14" />
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {ppoForm.entries.map((e, i) => (
+                        <TableRow key={`${e.materialId}-${i}`}>
+                          <TableCell>
+                            <Select
+                              value={e.materialId}
+                              onValueChange={(vid) => {
+                                const mat = materials.find((x) => x.id === vid);
+                                setPpoForm((f) => {
+                                  const next = [...f.entries];
+                                  next[i] = { materialId: vid, purchasePrice: mat?.standardPrice ?? 0 };
+                                  return { ...f, entries: next };
+                                });
+                              }}
+                            >
+                              <SelectTrigger>
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {materials
+                                  .filter((m) => m.isActive !== false)
+                                  .map((m) => (
+                                    <SelectItem key={m.id} value={m.id}>
+                                      {m.name}（{m.code}）
+                                    </SelectItem>
+                                  ))}
+                              </SelectContent>
+                            </Select>
+                          </TableCell>
+                          <TableCell>
+                            <Input
+                              type="number"
+                              min={0}
+                              value={e.purchasePrice || ''}
+                              onChange={(ev) => {
+                                const v = Number(ev.target.value) || 0;
+                                setPpoForm((f) => {
+                                  const next = [...f.entries];
+                                  next[i] = { ...next[i], purchasePrice: v };
+                                  return { ...f, entries: next };
+                                });
+                              }}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() =>
+                                setPpoForm((f) => ({ ...f, entries: f.entries.filter((_, j) => j !== i) }))
+                              }
+                            >
+                              <Trash2 className="w-4 h-4 text-destructive" />
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPpoDialogOpen(false)}>
+              キャンセル
+            </Button>
+            <Button onClick={savePpo}>{editingPpo ? '更新' : '追加'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={materialDialogOpen} onOpenChange={setMaterialDialogOpen}>
         <DialogContent className="max-w-md">
@@ -552,13 +980,15 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
                   </SelectTrigger>
                   <SelectContent>
                     {['建材', '金物', '電気', '設備', 'その他'].map((c) => (
-                      <SelectItem key={c} value={c}>{c}</SelectItem>
+                      <SelectItem key={c} value={c}>
+                        {c}
+                      </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="space-y-2">
                 <Label>単位</Label>
                 <Select value={materialForm.unit} onValueChange={(v) => setMaterialForm((f) => ({ ...f, unit: v }))}>
@@ -567,18 +997,30 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
                   </SelectTrigger>
                   <SelectContent>
                     {['枚', 'm', 'm2', 'kg', '本', '式', '個'].map((u) => (
-                      <SelectItem key={u} value={u}>{u}</SelectItem>
+                      <SelectItem key={u} value={u}>
+                        {u}
+                      </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>標準単価（円）</Label>
+                <Label>基準仕入単価（円）</Label>
                 <Input
                   type="number"
                   min={0}
                   value={materialForm.standardPrice || ''}
                   onChange={(e) => setMaterialForm((f) => ({ ...f, standardPrice: Number(e.target.value) || 0 }))}
+                />
+                <p className="text-[11px] text-muted-foreground">仕入れ価格オブジェクトに未登録のときに使われます</p>
+              </div>
+              <div className="space-y-2">
+                <Label>販売単価（円）</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={materialForm.sellingPrice || ''}
+                  onChange={(e) => setMaterialForm((f) => ({ ...f, sellingPrice: Number(e.target.value) || 0 }))}
                 />
               </div>
             </div>
@@ -598,7 +1040,9 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setMaterialDialogOpen(false)}>キャンセル</Button>
+            <Button variant="outline" onClick={() => setMaterialDialogOpen(false)}>
+              キャンセル
+            </Button>
             <Button onClick={saveMaterial}>{editingMaterial ? '更新' : '追加'}</Button>
           </DialogFooter>
         </DialogContent>
@@ -608,7 +1052,7 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
 
   const renderRatesTab = () => (
     <div className="space-y-4">
-      <p className="text-sm text-muted-foreground">標準歩掛マスタ。品目/単位/係数/有効フラグ。単位未入力不可・係数は数値。有効な歩掛のみOCR算出に使用。変更は監査ログに残ります。</p>
+      <p className="text-sm text-muted-foreground">標準歩掛マスタ。品目/単位/係数/仕入単価/有効フラグ。単位未入力不可・係数は数値。有効な歩掛のみOCR算出に使用。変更は監査ログに残ります。</p>
       <div className="flex items-center justify-between gap-4">
         <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -627,7 +1071,7 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
               <TableHead>カテゴリ</TableHead>
               <TableHead>単位</TableHead>
               <TableHead className="text-right">係数</TableHead>
-              <TableHead className="text-right">単価（円）</TableHead>
+              <TableHead className="text-right">仕入単価（円）</TableHead>
               <TableHead className="w-20">有効</TableHead>
               <TableHead className="w-20" />
             </TableRow>
@@ -703,7 +1147,7 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
                 />
               </div>
               <div className="space-y-2">
-                <Label>単価（円）</Label>
+                <Label>仕入単価（円）</Label>
                 <Input
                   type="number"
                   min={0}
@@ -828,7 +1272,7 @@ const SystemSettings: React.FC<SystemSettingsProps> = ({ materials = [], setMate
               <Input value={employeeForm.position} onChange={(e) => setEmployeeForm((f) => ({ ...f, position: e.target.value }))} placeholder="施工主任" />
             </div>
             <div className="space-y-2">
-              <Label>入社日（任意）</Label>
+              <Label>入社日 *</Label>
               <Input type="date" value={employeeForm.hireDate} onChange={(e) => setEmployeeForm((f) => ({ ...f, hireDate: e.target.value }))} />
             </div>
             <div className="flex items-center gap-2">

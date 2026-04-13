@@ -13,7 +13,7 @@ import { toast } from 'sonner';
 import { useAudit } from '../contexts/AuditContext';
 import { useAuth } from '../contexts/AuthContext';
 import {
-  ChevronLeft, ChevronRight, Filter, Calendar, Users, Plus, X, Building2, Move, Trash2
+  ChevronLeft, ChevronRight, Filter, Calendar, Users, Plus, X, Building2, Move, Trash2, Images,
 } from 'lucide-react';
 
 interface GanttItem {
@@ -54,6 +54,41 @@ interface ProjectAssignment {
 interface ProcessProps {
   customers: any[];
   setCustomers: React.Dispatch<React.SetStateAction<any[]>>;
+}
+
+/** 現場投稿メディア（画像または動画） */
+type SiteMediaItem = { type: 'image' | 'video'; url: string };
+
+/** 案件ごとの現場写真・動画投稿（アプリからの共有想定） */
+interface SitePhotoPost {
+  id: string;
+  projectName: string;
+  siteName: string;
+  comment: string;
+  authorName: string;
+  postedAt: string;
+  media: SiteMediaItem[];
+}
+
+function buildSitePhotoPostsFromProjects(projects: GanttItem[]): SitePhotoPost[] {
+  return projects.map((p, idx) => ({
+    id: `site-post-${p.id}`,
+    projectName: p.project,
+    siteName: p.location?.trim() || p.project,
+    comment:
+      idx === 0
+        ? '配管隠蔽前の記録です。問題ありません。'
+        : idx === 1
+          ? '足場設置完了。安全確認済みです。'
+          : '天井ボード貼り途中。仕上げは明日予定です。',
+    authorName: p.assignee?.trim() || '現場スタッフ',
+    postedAt: '2024-12-08T16:30:00',
+    media: [
+      { type: 'image', url: `https://picsum.photos/seed/letsdemo${p.id}a/480/320` },
+      { type: 'image', url: `https://picsum.photos/seed/letsdemo${p.id}b/480/320` },
+      ...(idx === 0 ? ([{ type: 'video' as const, url: 'https://www.w3schools.com/html/mov_bbb.mp4' }] satisfies SiteMediaItem[]) : []),
+    ],
+  }));
 }
 
 const weekdays = ['月', '火', '水', '木', '金', '土', '日'];
@@ -136,6 +171,8 @@ const Process: React.FC<ProcessProps> = () => {
     { id: 3, project: 'C工場改装', location: '埼玉県さいたま市□□7-8-9', assignee: '山田次郎', startDate: '2024-12-10', endDate: '2024-12-25', progress: 10, status: 'scheduled', color: '#FFAB00' }
   ]);
   const selectedProject = selectedProjectId != null ? ganttData.find(p => p.id === selectedProjectId) ?? null : null;
+
+  const sitePhotoPosts = useMemo(() => buildSitePhotoPostsFromProjects(ganttData), [ganttData]);
 
   const [calendarData, setCalendarData] = useState<CalendarPerson[]>([
     { id: 1, assignee: '田中太郎', monday: [{ id: '1-mon-1', name: 'A邸内装', hours: 8, color: '#0052CC' }], tuesday: [{ id: '1-tue-1', name: 'A邸内装', hours: 8, color: '#0052CC' }], wednesday: [{ id: '1-wed-1', name: 'A邸内装', hours: 8, color: '#0052CC' }], thursday: [{ id: '1-thu-1', name: 'A邸内装', hours: 4, color: '#0052CC' }, { id: '1-thu-2', name: 'Bビル改修', hours: 4, color: '#36B37E' }], friday: [{ id: '1-fri-1', name: 'Bビル改修', hours: 8, color: '#36B37E' }], saturday: [], sunday: [] },
@@ -556,78 +593,12 @@ const Process: React.FC<ProcessProps> = () => {
         </div>
       </div>
 
-      <Tabs defaultValue="calendar" className="space-y-4 sm:space-y-6">
-        <TabsList className="grid w-full grid-cols-2 h-10 sm:h-11">
-          <TabsTrigger value="calendar" className="flex items-center justify-center gap-1.5 sm:gap-2 text-sm"><Users className="w-4 h-4 flex-shrink-0" /><span className="truncate">人員カレンダー</span></TabsTrigger>
+      <Tabs defaultValue="schedule" className="space-y-4 sm:space-y-6">
+        <TabsList className="grid w-full grid-cols-3 h-10 sm:h-11">
           <TabsTrigger value="schedule" className="flex items-center justify-center gap-1.5 sm:gap-2 text-sm"><Calendar className="w-4 h-4 flex-shrink-0" /><span className="truncate">工程表</span></TabsTrigger>
+          <TabsTrigger value="calendar" className="flex items-center justify-center gap-1.5 sm:gap-2 text-sm"><Users className="w-4 h-4 flex-shrink-0" /><span className="truncate">人員カレンダー</span></TabsTrigger>
+          <TabsTrigger value="photos" className="flex items-center justify-center gap-1.5 sm:gap-2 text-sm"><Images className="w-4 h-4 flex-shrink-0" /><span className="truncate">写真一覧</span></TabsTrigger>
         </TabsList>
-
-        <TabsContent value="calendar" className="space-y-4 sm:space-y-6">
-          <Card>
-            <CardHeader className="pb-2 sm:pb-6">
-              <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-                <div className="min-w-0">
-                  <CardTitle className="text-lg sm:text-xl">人員カレンダー</CardTitle>
-                  <p className="text-xs sm:text-sm text-muted-foreground mt-1">人員×日付で稼働状況を表示。クォーター単位（当月〜2ヶ月先）で表示します。</p>
-                </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <Button variant="outline" size="sm" className="h-9" onClick={() => navigateQuarter('prev')}><ChevronLeft className="w-4 h-4" /></Button>
-                  <span className="font-medium text-sm sm:text-base px-2 sm:px-3 whitespace-nowrap" title="表示中: 当月〜2ヶ月先">{getQuarterLabel()}</span>
-                  <Button variant="outline" size="sm" className="h-9" onClick={() => navigateQuarter('next')}><ChevronRight className="w-4 h-4" /></Button>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="p-2 sm:p-6">
-              <div ref={calendarScrollRef} className="overflow-x-auto overflow-y-auto min-h-[50vh] max-h-[75vh] -mx-2 sm:mx-0 rounded-md border border-border/50" style={{ WebkitOverflowScrolling: 'touch' }}>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="w-24 sm:w-32 sticky left-0 z-10 bg-muted/80 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]">担当者</TableHead>
-                      {viewDates.map((d) => {
-                        const dateStr = d.toISOString().split('T')[0];
-                        const isToday = dateStr === new Date().toISOString().split('T')[0];
-                        const dayIdx = d.getDay();
-                        const dayKey = weekdayKeys[dayIdx === 0 ? 6 : dayIdx - 1];
-                        return (
-                          <TableHead key={dateStr} className={`text-center min-w-[4rem] sm:min-w-24 whitespace-nowrap px-1 sm:px-2 ${dayIdx === 0 || dayIdx === 6 ? 'bg-muted/50' : ''} ${isToday ? 'ring-1 ring-primary' : ''}`}>
-                            <div className="text-[10px] sm:text-xs font-normal text-muted-foreground">{d.getMonth() + 1}/{d.getDate()}</div>
-                            <div className="text-xs">{weekdays[dayIdx === 0 ? 6 : dayIdx - 1]}</div>
-                          </TableHead>
-                        );
-                      })}
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filteredCalendarData.map((person) => (
-                      <TableRow key={person.id}>
-                        <TableCell className="font-medium sticky left-0 z-10 bg-card text-sm shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]">{person.assignee}</TableCell>
-                        {viewDates.map((d) => {
-                          const dateStr = d.toISOString().split('T')[0];
-                          const dayIdx = d.getDay();
-                          const dayKey = weekdayKeys[dayIdx === 0 ? 6 : dayIdx - 1];
-                          const assignments = getAssignmentsForDate(person, dateStr, dayKey);
-                          const isWeekend = dayIdx === 0 || dayIdx === 6;
-                          return (
-                            <TableCell key={dateStr} className={`p-1 sm:p-2 min-h-16 sm:min-h-20 align-top min-w-[4rem] sm:min-w-24 ${isWeekend ? 'bg-muted/30' : ''}`}>
-                              <div className="space-y-1 min-h-12 sm:min-h-16">
-                                {assignments.map((a) => renderCalendarCard(a, person, dayKey))}
-                                {projectFilter === 'all' && (
-                                  <Button variant="outline" size="sm" className="w-full h-6 text-[10px] sm:text-xs opacity-0 hover:opacity-100 touch-manipulation" onClick={() => openAddProjectDialog(person.id, dayKey)}>
-                                    <Plus className="w-3 h-3 mr-0.5 sm:mr-1" />追加
-                                  </Button>
-                                )}
-                              </div>
-                            </TableCell>
-                          );
-                        })}
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
 
         <TabsContent value="schedule" className="space-y-4 sm:space-y-6">
           <Card className="border border-border">
@@ -750,6 +721,133 @@ const Process: React.FC<ProcessProps> = () => {
                 </div>
                 </div>
               </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="calendar" className="space-y-4 sm:space-y-6">
+          <Card>
+            <CardHeader className="pb-2 sm:pb-6">
+              <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <CardTitle className="text-lg sm:text-xl">人員カレンダー</CardTitle>
+                  <p className="text-xs sm:text-sm text-muted-foreground mt-1">人員×日付で稼働状況を表示。クォーター単位（当月〜2ヶ月先）で表示します。</p>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <Button variant="outline" size="sm" className="h-9" onClick={() => navigateQuarter('prev')}><ChevronLeft className="w-4 h-4" /></Button>
+                  <span className="font-medium text-sm sm:text-base px-2 sm:px-3 whitespace-nowrap" title="表示中: 当月〜2ヶ月先">{getQuarterLabel()}</span>
+                  <Button variant="outline" size="sm" className="h-9" onClick={() => navigateQuarter('next')}><ChevronRight className="w-4 h-4" /></Button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="p-2 sm:p-6">
+              <div ref={calendarScrollRef} className="overflow-x-auto overflow-y-auto min-h-[50vh] max-h-[75vh] -mx-2 sm:mx-0 rounded-md border border-border/50" style={{ WebkitOverflowScrolling: 'touch' }}>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-24 sm:w-32 sticky left-0 z-10 bg-muted/80 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]">担当者</TableHead>
+                      {viewDates.map((d) => {
+                        const dateStr = d.toISOString().split('T')[0];
+                        const isToday = dateStr === new Date().toISOString().split('T')[0];
+                        const dayIdx = d.getDay();
+                        const dayKey = weekdayKeys[dayIdx === 0 ? 6 : dayIdx - 1];
+                        return (
+                          <TableHead key={dateStr} className={`text-center min-w-[4rem] sm:min-w-24 whitespace-nowrap px-1 sm:px-2 ${dayIdx === 0 || dayIdx === 6 ? 'bg-muted/50' : ''} ${isToday ? 'ring-1 ring-primary' : ''}`}>
+                            <div className="text-[10px] sm:text-xs font-normal text-muted-foreground">{d.getMonth() + 1}/{d.getDate()}</div>
+                            <div className="text-xs">{weekdays[dayIdx === 0 ? 6 : dayIdx - 1]}</div>
+                          </TableHead>
+                        );
+                      })}
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredCalendarData.map((person) => (
+                      <TableRow key={person.id}>
+                        <TableCell className="font-medium sticky left-0 z-10 bg-card text-sm shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]">{person.assignee}</TableCell>
+                        {viewDates.map((d) => {
+                          const dateStr = d.toISOString().split('T')[0];
+                          const dayIdx = d.getDay();
+                          const dayKey = weekdayKeys[dayIdx === 0 ? 6 : dayIdx - 1];
+                          const assignments = getAssignmentsForDate(person, dateStr, dayKey);
+                          const isWeekend = dayIdx === 0 || dayIdx === 6;
+                          return (
+                            <TableCell key={dateStr} className={`p-1 sm:p-2 min-h-16 sm:min-h-20 align-top min-w-[4rem] sm:min-w-24 ${isWeekend ? 'bg-muted/30' : ''}`}>
+                              <div className="space-y-1 min-h-12 sm:min-h-16">
+                                {assignments.map((a) => renderCalendarCard(a, person, dayKey))}
+                                {projectFilter === 'all' && (
+                                  <Button variant="outline" size="sm" className="w-full h-6 text-[10px] sm:text-xs opacity-0 hover:opacity-100 touch-manipulation" onClick={() => openAddProjectDialog(person.id, dayKey)}>
+                                    <Plus className="w-3 h-3 mr-0.5 sm:mr-1" />追加
+                                  </Button>
+                                )}
+                              </div>
+                            </TableCell>
+                          );
+                        })}
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="photos" className="space-y-4 sm:space-y-6">
+          <Card>
+            <CardHeader className="pb-2 sm:pb-6">
+              <CardTitle className="text-lg sm:text-xl">写真一覧</CardTitle>
+              <p className="text-xs sm:text-sm text-muted-foreground mt-1">
+                案件ごとに、現場から投稿された写真・動画を一覧します（現場名・コメント・複数枚対応）。
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-8">
+              {sitePhotoPosts.length === 0 ? (
+                <p className="text-sm text-muted-foreground">表示する投稿がありません。</p>
+              ) : (
+                sitePhotoPosts.map((post) => (
+                  <div key={post.id} className="rounded-lg border border-border p-4 space-y-3 bg-card">
+                    <div className="flex flex-wrap items-baseline justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-medium text-muted-foreground">案件</p>
+                        <p className="font-semibold">{post.projectName}</p>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {new Date(post.postedAt).toLocaleString('ja-JP', { dateStyle: 'medium', timeStyle: 'short' })} · {post.authorName}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-muted-foreground">現場名</p>
+                      <p className="text-sm">{post.siteName}</p>
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-muted-foreground">コメント</p>
+                      <p className="text-sm whitespace-pre-wrap">{post.comment}</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {post.media.map((m, i) =>
+                        m.type === 'image' ? (
+                          <a
+                            key={`${post.id}-m-${i}`}
+                            href={m.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="block rounded-md overflow-hidden border border-border max-w-[min(100%,280px)]"
+                          >
+                            <img src={m.url} alt="" className="w-full h-auto object-cover max-h-48" loading="lazy" />
+                          </a>
+                        ) : (
+                          <video
+                            key={`${post.id}-m-${i}`}
+                            src={m.url}
+                            controls
+                            className="rounded-md border border-border max-w-[min(100%,320px)] max-h-56 bg-black"
+                          />
+                        )
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
             </CardContent>
           </Card>
         </TabsContent>

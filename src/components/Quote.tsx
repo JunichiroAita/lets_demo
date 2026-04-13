@@ -189,6 +189,8 @@ interface QuoteProps {
   customers: Customer[];
   setCustomers: React.Dispatch<React.SetStateAction<Customer[]>>;
   materials: Material[];
+  /** 設定の「適用中の仕入れ価格オブジェクト」に基づく実効仕入単価 */
+  getMaterialPurchasePrice?: (mat: Material) => number;
   estimates: EstimateRecord[];
   setEstimates: React.Dispatch<React.SetStateAction<EstimateRecord[]>>;
   openEstimateId?: string | null;
@@ -222,7 +224,17 @@ function nextEstimateNumber(estimates: EstimateRecord[]): string {
   return `EST-${yyyymm}-${n}`;
 }
 
-const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customers, materials, estimates, setEstimates, openEstimateId, setOpenEstimateId }) => {
+const Quote: React.FC<QuoteProps> = ({
+  quoteProjects,
+  setQuoteProjects,
+  customers,
+  materials,
+  getMaterialPurchasePrice,
+  estimates,
+  setEstimates,
+  openEstimateId,
+  setOpenEstimateId,
+}) => {
   const { session } = useAuth();
   const { log: auditLog } = useAudit();
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(quoteProjects[0]?.id ?? null);
@@ -331,7 +343,9 @@ const Quote: React.FC<QuoteProps> = ({ quoteProjects, setQuoteProjects, customer
     const items: EstimateLineItem[] = extracted.map((e, i) => {
       const mat = materials.find((m) => m.name === e.item && (m as { isActive?: boolean }).isActive !== false);
       const fromMaster = !!mat;
-      const unitPrice = mat?.standardPrice ?? Math.round(800 + Math.random() * 400);
+      const unitPrice = mat
+        ? (getMaterialPurchasePrice ? getMaterialPurchasePrice(mat) : mat.standardPrice)
+        : Math.round(800 + Math.random() * 400);
       const amount = e.quantity * unitPrice;
       return {
         id: `li-${Date.now()}-${i}`,

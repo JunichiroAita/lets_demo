@@ -9,14 +9,16 @@ import {
   Users,
   User,
   Settings,
-  ChevronDown,
   Search,
   LogOut,
+  GraduationCap,
+  Bell,
 } from 'lucide-react';
 import { Toaster } from './components/ui/sonner';
 import { Input } from './components/ui/input';
 import { Avatar, AvatarFallback } from './components/ui/avatar';
 import { Button } from './components/ui/button';
+import { Popover, PopoverContent, PopoverTrigger } from './components/ui/popover';
 import Dashboard from './components/Dashboard';
 import Quote from './components/Quote';
 import Process from './components/Process';
@@ -25,6 +27,7 @@ import Invoice from './components/Invoice';
 import Customer from './components/Customer';
 import type { CustomerRecord } from './components/Customer';
 import Attendance from './components/Attendance';
+import TrainingVideos from './components/TrainingVideos';
 import SystemSettings from './components/SystemSettings';
 import type { EmployeeRecord } from './components/SystemSettings';
 import Projects from './components/Projects';
@@ -32,6 +35,8 @@ import Login from './components/Login';
 import Forbidden403 from './components/Forbidden403';
 import type { PurchaseOrderRecord } from './components/Purchase_history';
 import { useAuth } from './contexts/AuthContext';
+import type { PurchasePriceObjectRecord } from './types/purchasePriceObject';
+import { resolveMaterialPurchasePrice } from './lib/resolveMaterialPurchasePrice';
 
 type Page =
   | 'dashboard'
@@ -41,8 +46,21 @@ type Page =
   | 'invoice'
   | 'customer'
   | 'attendance'
+  | 'training-videos'
   | 'system-settings'
   | 'projects';
+
+/** Web ヘッダーに表示する通知（モバイルアプリからの有給申請など） */
+export type LeaveWebNotification = {
+  id: string;
+  title: string;
+  body: string;
+  createdAt: string;
+  read: boolean;
+  leaveRequestId: string;
+};
+
+const WEB_NOTIFICATIONS_KEY = 'lets_web_notifications';
 
 const navigationItems = [
   { id: 'dashboard', label: 'ダッシュボード', icon: Home },
@@ -53,6 +71,7 @@ const navigationItems = [
   { id: 'invoice', label: '請求', icon: Receipt },
   { id: 'customer', label: '顧客', icon: Users },
   { id: 'attendance', label: '勤怠', icon: User },
+  { id: 'training-videos', label: '教育動画', icon: GraduationCap },
   { id: 'system-settings', label: '設定', icon: Settings },
 ];
 
@@ -126,7 +145,10 @@ export type MaterialRecord = {
   name: string;
   unit: string;
   category: string;
+  /** 仕入単価（円） */
   standardPrice: number;
+  /** 販売単価（円） */
+  sellingPrice?: number;
   code: string;
   memo?: string;
   isActive?: boolean;
@@ -180,8 +202,29 @@ export type OrderTemplateRecord = {
 };
 
 const initialMaterials: MaterialRecord[] = [
-  { id: 'M1', name: '石膏ボード 12.5mm', unit: '枚', category: '建材', standardPrice: 850, code: 'GP-12.5', isActive: true },
-  { id: 'M2', name: 'LGS @455', unit: 'm', category: '建材', standardPrice: 1200, code: 'LGS-455', isActive: true },
+  { id: 'M1', name: '石膏ボード 12.5mm', unit: '枚', category: '建材', standardPrice: 850, sellingPrice: 1100, code: 'GP-12.5', isActive: true },
+  { id: 'M2', name: 'LGS @455', unit: 'm', category: '建材', standardPrice: 1200, sellingPrice: 1550, code: 'LGS-455', isActive: true },
+];
+
+const PURCHASE_PRICE_OBJECTS_KEY = 'lets_purchase_price_objects';
+const ACTIVE_PURCHASE_PRICE_OBJECT_ID_KEY = 'lets_active_purchase_price_object_id';
+
+const initialPurchasePriceObjects: PurchasePriceObjectRecord[] = [
+  {
+    id: 'ppo-default',
+    name: '標準仕入価格',
+    memo: '既定の仕入単価セット。材料マスタの基準仕入と同じ値から開始できます。',
+    entries: [
+      { materialId: 'M1', purchasePrice: 850 },
+      { materialId: 'M2', purchasePrice: 1200 },
+    ],
+  },
+  {
+    id: 'ppo-volume',
+    name: '大口仕入価格',
+    memo: 'ボリュームディスカウント想定（例: 石膏ボードのみ差し替え）',
+    entries: [{ materialId: 'M1', purchasePrice: 780 }],
+  },
 ];
 
 /** 請求明細行 */
@@ -291,9 +334,17 @@ const initialOrderTemplates: OrderTemplateRecord[] = [
 const EMPLOYEES_STORAGE_KEY = 'lets_employees';
 
 const initialEmployees: EmployeeRecord[] = [
-  { id: 'E1', employeeNumber: 1, name: '管理者', loginId: 'admin', role: 'owner', isActive: true },
-  { id: 'E2', employeeNumber: 2, name: '現場', loginId: 'field1', role: 'field', isActive: true },
+  { id: 'E1', employeeNumber: 1, name: '管理者', loginId: 'admin', role: 'owner', hireDate: '2020-04-01', isActive: true },
+  { id: 'E2', employeeNumber: 2, name: '現場', loginId: 'field1', role: 'field', hireDate: '2021-06-15', isActive: true },
 ];
+
+function normalizeEmployeesFromStorage(raw: unknown): EmployeeRecord[] {
+  if (!Array.isArray(raw)) return initialEmployees;
+  return raw.map((e: EmployeeRecord) => ({
+    ...e,
+    hireDate: e.hireDate ?? '',
+  }));
+}
 
 export default function App() {
   const { session, logout, isField } = useAuth();
@@ -301,6 +352,50 @@ export default function App() {
   const [quoteProjects, setQuoteProjects] = useState(initialQuoteProjects);
   const [customers, setCustomers] = useState<CustomerRecord[]>(initialCustomers);
   const [materials, setMaterials] = useState<MaterialRecord[]>(initialMaterials);
+
+  const [purchasePriceObjects, setPurchasePriceObjects] = useState<PurchasePriceObjectRecord[]>(() => {
+    try {
+      const s = localStorage.getItem(PURCHASE_PRICE_OBJECTS_KEY);
+      if (s) return JSON.parse(s);
+    } catch (_) {}
+    return initialPurchasePriceObjects;
+  });
+
+  const [activePurchasePriceObjectId, setActivePurchasePriceObjectId] = useState<string | null>(() => {
+    try {
+      const s = localStorage.getItem(ACTIVE_PURCHASE_PRICE_OBJECT_ID_KEY);
+      if (s === '') return null;
+      if (s) return s;
+    } catch (_) {}
+    return 'ppo-default';
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(PURCHASE_PRICE_OBJECTS_KEY, JSON.stringify(purchasePriceObjects));
+    } catch (_) {}
+  }, [purchasePriceObjects]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(ACTIVE_PURCHASE_PRICE_OBJECT_ID_KEY, activePurchasePriceObjectId ?? '');
+    } catch (_) {}
+  }, [activePurchasePriceObjectId]);
+
+  useEffect(() => {
+    if (
+      activePurchasePriceObjectId != null &&
+      !purchasePriceObjects.some((o) => o.id === activePurchasePriceObjectId)
+    ) {
+      setActivePurchasePriceObjectId(purchasePriceObjects[0]?.id ?? null);
+    }
+  }, [purchasePriceObjects, activePurchasePriceObjectId]);
+
+  const getMaterialPurchasePrice = React.useCallback(
+    (m: MaterialRecord) =>
+      resolveMaterialPurchasePrice(m.id, m.standardPrice, purchasePriceObjects, activePurchasePriceObjectId),
+    [purchasePriceObjects, activePurchasePriceObjectId]
+  );
   const [invoices, setInvoices] = useState<InvoiceRecord[]>(initialInvoices);
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrderRecord[]>(initialPurchaseOrders);
   const [estimates, setEstimates] = useState<EstimateRecord[]>(initialEstimates);
@@ -311,10 +406,51 @@ export default function App() {
   const [employees, setEmployees] = useState<EmployeeRecord[]>(() => {
     try {
       const s = localStorage.getItem(EMPLOYEES_STORAGE_KEY);
-      if (s) return JSON.parse(s);
+      if (s) return normalizeEmployeesFromStorage(JSON.parse(s));
     } catch (_) {}
     return initialEmployees;
   });
+
+  const [webNotifications, setWebNotifications] = useState<LeaveWebNotification[]>(() => {
+    try {
+      const s = localStorage.getItem(WEB_NOTIFICATIONS_KEY);
+      if (s) return JSON.parse(s);
+    } catch (_) {}
+    return [];
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(WEB_NOTIFICATIONS_KEY, JSON.stringify(webNotifications));
+    } catch (_) {}
+  }, [webNotifications]);
+
+  const pushLeaveRequestWebNotification = React.useCallback(
+    (info: { leaveRequestId: string; employeeName: string; periodLabel: string }) => {
+      const id = `wn-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+      setWebNotifications((prev) => [
+        {
+          id,
+          title: '有給申請（モバイルアプリ）',
+          body: `${info.employeeName} より申請がありました（${info.periodLabel}）。勤怠の「有給申請管理」で確認できます。`,
+          createdAt: new Date().toISOString(),
+          read: false,
+          leaveRequestId: info.leaveRequestId,
+        },
+        ...prev,
+      ]);
+    },
+    []
+  );
+
+  const unreadWebNotificationCount = useMemo(
+    () => webNotifications.filter((n) => !n.read).length,
+    [webNotifications]
+  );
+
+  const markAllWebNotificationsRead = React.useCallback(() => {
+    setWebNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+  }, []);
 
   useEffect(() => {
     try {
@@ -364,6 +500,7 @@ export default function App() {
             customers={customers}
             setCustomers={setCustomers}
             materials={materials}
+            getMaterialPurchasePrice={getMaterialPurchasePrice}
             estimates={estimates}
             setEstimates={setEstimates}
             openEstimateId={openEstimateId}
@@ -414,9 +551,34 @@ export default function App() {
           />
         );
       case 'attendance':
-        return <Attendance />;
+        return (
+          <Attendance
+            onPaidLeaveRequestedFromApp={(info) => {
+              pushLeaveRequestWebNotification({
+                leaveRequestId: info.leaveRequestId,
+                employeeName: info.employeeName,
+                periodLabel: info.periodLabel,
+              });
+            }}
+          />
+        );
+      case 'training-videos':
+        return <TrainingVideos />;
       case 'system-settings':
-        return isField ? <Forbidden403 onGoBack={() => setCurrentPage('dashboard')} /> : <SystemSettings materials={materials} setMaterials={setMaterials} employees={employees} setEmployees={setEmployees} />;
+        return isField ? (
+          <Forbidden403 onGoBack={() => setCurrentPage('dashboard')} />
+        ) : (
+          <SystemSettings
+            materials={materials}
+            setMaterials={setMaterials}
+            employees={employees}
+            setEmployees={setEmployees}
+            purchasePriceObjects={purchasePriceObjects}
+            setPurchasePriceObjects={setPurchasePriceObjects}
+            activePurchasePriceObjectId={activePurchasePriceObjectId}
+            setActivePurchasePriceObjectId={setActivePurchasePriceObjectId}
+          />
+        );
       case 'projects':
         return (
           <Projects
@@ -494,6 +656,52 @@ export default function App() {
                 className="w-70 pl-10 bg-input-background border-border"
               />
             </div>
+            <Popover
+              onOpenChange={(open) => {
+                if (open && unreadWebNotificationCount > 0) markAllWebNotificationsRead();
+              }}
+            >
+              <PopoverTrigger asChild>
+                <Button variant="ghost" size="icon" className="relative shrink-0" title="通知">
+                  <Bell className="w-5 h-5" />
+                  {unreadWebNotificationCount > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 min-w-[1.125rem] h-[1.125rem] rounded-full bg-destructive text-[10px] font-medium text-destructive-foreground flex items-center justify-center px-0.5">
+                      {unreadWebNotificationCount > 9 ? '9+' : unreadWebNotificationCount}
+                    </span>
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-80 sm:w-96 p-0">
+                <div className="px-3 py-2 border-b border-border font-medium text-sm">通知</div>
+                <div className="max-h-72 overflow-y-auto">
+                  {webNotifications.length === 0 ? (
+                    <p className="p-4 text-sm text-muted-foreground">通知はありません。</p>
+                  ) : (
+                    webNotifications.map((n) => (
+                      <div
+                        key={n.id}
+                        className={`px-3 py-2.5 border-b border-border/60 text-sm ${n.read ? 'opacity-70' : 'bg-muted/40'}`}
+                      >
+                        <p className="font-medium">{n.title}</p>
+                        <p className="text-muted-foreground mt-1 text-xs leading-relaxed">{n.body}</p>
+                        <p className="text-[10px] text-muted-foreground mt-1">
+                          {new Date(n.createdAt).toLocaleString('ja-JP')}
+                        </p>
+                        <Button
+                          variant="link"
+                          className="h-auto p-0 text-xs mt-1"
+                          onClick={() => {
+                            setCurrentPage('attendance');
+                          }}
+                        >
+                          勤怠で開く
+                        </Button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </PopoverContent>
+            </Popover>
             <div className="flex items-center gap-2">
               <Avatar className="w-8 h-8">
                 <AvatarFallback className="bg-primary text-primary-foreground text-sm">
